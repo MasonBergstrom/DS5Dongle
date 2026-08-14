@@ -33,17 +33,13 @@
 #include "battery_led.h"
 #endif
 
-// Pico SDK speciifically for waiting on conditions
-#include "pico/critical_section.h"
-
 uint8_t reportSeqCounter = 0;
 uint8_t packetCounter = 0;
 bool spk_active = false;
 
 USBGetStateData interrupt_in_data{};
 
-critical_section_t report_cs;
-volatile bool report_dirty = false;
+bool report_dirty = false;
 
 void __not_in_flash_func(interrupt_loop)() {
     if (!tud_hid_ready()) return;
@@ -61,13 +57,11 @@ void __not_in_flash_func(interrupt_loop)() {
     bool should_send = false;
     USBGetStateData report{};
 
-    critical_section_enter_blocking(&report_cs);
     if (report_dirty) {
         report = interrupt_in_data;
         report_dirty = false;
         should_send = true;
     }
-    critical_section_exit(&report_cs);
 
     // Only send to TinyUSB if we actually grabbed fresh data
     if (should_send) {
@@ -77,9 +71,7 @@ void __not_in_flash_func(interrupt_loop)() {
 
             // If the report failed to queue, restore the dirty flag 
             // so we try again on the next loop iteration.
-            critical_section_enter_blocking(&report_cs);
             report_dirty = true;
-            critical_section_exit(&report_cs);
         }
     }
 }
@@ -134,16 +126,8 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
             return;
         }
 
-        // We add the critical section here to avoid any race conditions when writing to interrupt_in_data,
-        // which is shared between the main loop and this callback.
-        // The critical section ensures that only one thread can access the buffer at a time,
-        // preventing data corruption and ensuring thread safety.
-        // We also set the report_dirty flag to true to indicate that new data is available
-        //  and needs to be sent in the next interrupt report.
-        critical_section_enter_blocking(&report_cs);
         memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
         report_dirty = true;
-        critical_section_exit(&report_cs);
 #if ENABLE_BATT_LED
         battery_led_note_report();
 #endif
@@ -345,8 +329,6 @@ int main() {
     }
 #endif
 
-    // Initialize the critical section for the report buffer
-    critical_section_init(&report_cs);
     wake_init();
 
     config_load();
