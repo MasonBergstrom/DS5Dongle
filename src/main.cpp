@@ -10,6 +10,7 @@
 #include "resample.h"
 #include "audio.h"
 #include "btstack_util.h"
+#include "button_remap.h"
 #if ENABLE_DEBUG
 #include "debug.h"
 #endif
@@ -39,16 +40,7 @@ uint8_t reportSeqCounter = 0;
 uint8_t packetCounter = 0;
 bool spk_active = false;
 
-uint8_t interrupt_in_data[63] = {
-    0x7f, 0x7d, 0x7f, 0x7e, 0x00, 0x00, 0xa7,
-    0x08, 0x00, 0x00, 0x00, 0x52, 0x43, 0x30, 0x41,
-    0x01, 0x00, 0x0e, 0x00, 0xef, 0xff, 0x03, 0x03,
-    0x7b, 0x1b, 0x18, 0xf0, 0xcc, 0x9c, 0x60, 0x00,
-    0xfc, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
-    0x00, 0x00, 0x09, 0x09, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0xa7, 0xad, 0x60, 0x00, 0x29, 0x18, 0x00,
-    0x53, 0x9f, 0x28, 0x35, 0xa5, 0xa8, 0x0c, 0x8b
-};
+USBGetStateData interrupt_in_data{};
 
 critical_section_t report_cs;
 volatile bool report_dirty = false;
@@ -58,20 +50,20 @@ void __not_in_flash_func(interrupt_loop)() {
 
     // TODO: Refactor for better code reuse
     if (get_config().polling_rate_mode != 2) {
-        if (!tud_hid_report(0x01, interrupt_in_data, 63)) {
+        USBGetStateData report = interrupt_in_data;
+        button_remap_apply(report);
+        if (!tud_hid_report(0x01, &report, sizeof(report))) {
             printf("[USBHID] tud_hid_report error\n");
         }
         return;
     }
 
     bool should_send = false;
-    // Local buffer to hold the report data while we prepare it to send. 
-    uint8_t safe_report[63];
-
+    USBGetStateData report{};
 
     critical_section_enter_blocking(&report_cs);
     if (report_dirty) {
-        memcpy(safe_report, interrupt_in_data, 63);
+        report = interrupt_in_data;
         report_dirty = false;
         should_send = true;
     }
@@ -79,7 +71,8 @@ void __not_in_flash_func(interrupt_loop)() {
 
     // Only send to TinyUSB if we actually grabbed fresh data
     if (should_send) {
-        if (!tud_hid_report(0x01, safe_report, 63)) {
+        button_remap_apply(report);
+        if (!tud_hid_report(0x01, &report, sizeof(report))) {
             printf("[USBHID] tud_hid_report error\n");
 
             // If the report failed to queue, restore the dirty flag 
@@ -102,10 +95,12 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
             }
             return;
         }
-        if ((data[56] & 1) != (interrupt_in_data[53] & 1)) {
+        if ((data[56] & 1) != interrupt_in_data.PluggedHeadphones) {
             set_headset(data[56] & 1);
         }
-        if (((data[56] >> 2) & 1) != ((interrupt_in_data[53] >> 2) & 1)) {
+        // Keep MuteLight in sync with the controller's current mute state,
+        // primarily for handling USB Audio mute commands.
+        if (((data[56] >> 2) & 1) != interrupt_in_data.MicMuted) {
             const SetStateData state{
                 .AllowMuteLight = 1,
                 .MuteLightMode = ((data[56] >> 2) & 1) ? MuteLight::On : MuteLight::Off,
@@ -132,21 +127,21 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         #endif
 
         if (get_config().polling_rate_mode != 2) {
-            memcpy(interrupt_in_data, data + 3, 63);
+            memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif
             return;
         }
 
-        // We add the critical section here to avoid any race conditions when writing to the interrupt_in_data buffer,
+        // We add the critical section here to avoid any race conditions when writing to interrupt_in_data,
         // which is shared between the main loop and this callback.
         // The critical section ensures that only one thread can access the buffer at a time,
         // preventing data corruption and ensuring thread safety.
         // We also set the report_dirty flag to true to indicate that new data is available
         //  and needs to be sent in the next interrupt report.
         critical_section_enter_blocking(&report_cs);
-        memcpy(interrupt_in_data, data + 3, 63);
+        memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
         report_dirty = true;
         critical_section_exit(&report_cs);
 #if ENABLE_BATT_LED
@@ -229,10 +224,16 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
     (void) bufsize;
 
     if (is_pico_cmd(report_id)) {
+        // TinyUSB owns this buffer. USB printf() may re-enter tud_task() and reuse it,
+        // so copy the entire command before printing or processing it.
+        uint8_t buf_copy[CFG_TUD_HID_EP_BUFSIZE];
+        memcpy(buf_copy, buffer, bufsize);
+
 #if ENABLE_VERBOSE
-        printf("[HID] Receive 0xf6 setting config, funcid:0x%02X\n", buffer[0]);
+        printf("[HID] Receive 0x%02X setting config, funcid:0x%02X\n", report_id, buf_copy[0]);
 #endif
-        pico_cmd_set(report_id, buffer, bufsize);
+
+        pico_cmd_set(report_id, buf_copy, bufsize);
         return;
     }
 

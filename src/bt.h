@@ -17,6 +17,8 @@ typedef void (*bt_data_callback_t)(CHANNEL_TYPE channel, uint8_t *data, uint16_t
 
 struct SetStateData;
 
+extern const uint8_t state_init_data[66];
+
 int bt_init();
 void bt_register_data_callback(bt_data_callback_t callback);
 void bt_send_packet(uint8_t *data, uint16_t len);

@@ -122,6 +122,8 @@ add_executable(ds5-bridge
         src/cmd.cpp
         src/ram_mem.c
         src/fake_ds5.h
+        src/button_remap.cpp
+        src/button_remap.h
 )
 
 if (ENABLE_DEBUG)

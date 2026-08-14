@@ -140,6 +140,12 @@ void config_valid() {
         body->status_gpio_mode = 0;
         printf("[Config] status_gpio_mode is invalid\n");
     }
+    for (auto& v : body->button_remap) {
+        if (v >= 29) {
+            printf("[Config] Button remap value is invalid %d\n",v);
+            v = 0;
+        }
+    }
 }
 
 void config_load() {

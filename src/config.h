@@ -27,7 +27,10 @@ struct __attribute__((packed)) Config_body {
     uint8_t lock_volume; // bool
     uint8_t status_gpio_pin; // board-usable GPIO, 0xff: disabled
     uint8_t status_gpio_mode; // 0: high while connected, 1: button pulse on connect
+    uint8_t button_remap[29]; // one entry per Button enum value, all zero default
 };
+
+static_assert(sizeof(Config_body) <= 63);
 
 struct __attribute__((packed)) Config {
     uint32_t magic;

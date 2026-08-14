@@ -18,11 +18,15 @@ Examples:
   python config_tool.py get
   python config_tool.py set speaker_volume=90 enable_wake=1
   python config_tool.py set haptics_gain=1.5 --no-save
+  python config_tool.py remap
+  python config_tool.py remap square=cross l1=disable
+  python config_tool.py remap square=nomap
   python config_tool.py fields
 """
 import argparse
 import struct
 import sys
+import time
 
 
 def _load_hid():
@@ -49,10 +53,86 @@ FUNC_RECONNECT = 0x03    # reconnect tinyusb device
 SET_DATA_LEN = 63        # data bytes after the report id (descriptor report count 0x3F)
 FEATURE_REPORT_LEN = SET_DATA_LEN + 1  # report id + descriptor report count
 
+# On macOS, back-to-back IOHID feature reports can return before TinyUSB has
+# dispatched the preceding SET_REPORT callback.  Besides making a following
+# GET_REPORT return stale data, this can also make the separate save command
+# overtake the in-RAM update.  Keep the protocol ordered with a small settling
+# interval and an explicit read barrier between update and save.
+HID_SET_REPORT_DELAY = 0.05
+
 CONFIG_VERSION = 5       # src/config.cpp CONFIG_VERSION (display only)
 
+BUTTON_NAMES = (
+    "NoMap",
+    "DPadNorth",
+    "DPadNorthEast",
+    "DPadEast",
+    "DPadSouthEast",
+    "DPadSouth",
+    "DPadSouthWest",
+    "DPadWest",
+    "DPadNorthWest",
+    "Square",
+    "Cross",
+    "Circle",
+    "Triangle",
+    "L1",
+    "R1",
+    "L2",
+    "R2",
+    "Create",
+    "Options",
+    "L3",
+    "R3",
+    "Home",
+    "Pad",
+    "Mute",
+    "LeftFunction",
+    "RightFunction",
+    "LeftPaddle",
+    "RightPaddle",
+    "Disable",
+)
+BUTTON_COUNT = len(BUTTON_NAMES)
+
+
+def normalize_button_name(name):
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+BUTTON_NAME_TO_ID = {
+    normalize_button_name(name): index
+    for index, name in enumerate(BUTTON_NAMES)
+}
+BUTTON_NAME_TO_ID.update({
+    "up": BUTTON_NAME_TO_ID["dpadnorth"],
+    "north": BUTTON_NAME_TO_ID["dpadnorth"],
+    "upright": BUTTON_NAME_TO_ID["dpadnortheast"],
+    "northeast": BUTTON_NAME_TO_ID["dpadnortheast"],
+    "ne": BUTTON_NAME_TO_ID["dpadnortheast"],
+    "right": BUTTON_NAME_TO_ID["dpadeast"],
+    "east": BUTTON_NAME_TO_ID["dpadeast"],
+    "downright": BUTTON_NAME_TO_ID["dpadsoutheast"],
+    "southeast": BUTTON_NAME_TO_ID["dpadsoutheast"],
+    "se": BUTTON_NAME_TO_ID["dpadsoutheast"],
+    "down": BUTTON_NAME_TO_ID["dpadsouth"],
+    "south": BUTTON_NAME_TO_ID["dpadsouth"],
+    "downleft": BUTTON_NAME_TO_ID["dpadsouthwest"],
+    "southwest": BUTTON_NAME_TO_ID["dpadsouthwest"],
+    "sw": BUTTON_NAME_TO_ID["dpadsouthwest"],
+    "left": BUTTON_NAME_TO_ID["dpadwest"],
+    "west": BUTTON_NAME_TO_ID["dpadwest"],
+    "upleft": BUTTON_NAME_TO_ID["dpadnorthwest"],
+    "northwest": BUTTON_NAME_TO_ID["dpadnorthwest"],
+    "nw": BUTTON_NAME_TO_ID["dpadnorthwest"],
+    "ps": BUTTON_NAME_TO_ID["home"],
+    "touchpad": BUTTON_NAME_TO_ID["pad"],
+    "none": BUTTON_NAME_TO_ID["nomap"],
+    "off": BUTTON_NAME_TO_ID["disable"],
+})
+
 # struct.pack/unpack codes per field kind.
-KIND_TO_CODE = {"u8": "B", "float": "f"}
+KIND_TO_CODE = {"u8": "B", "float": "f", "remap": f"{BUTTON_COUNT}B"}
 
 # FIELDS is the single source of truth for the packed Config_body layout
 # (src/config.h). To add/remove/reorder a field, edit ONLY this table -- the
@@ -78,11 +158,42 @@ FIELDS = [
     ("lock_volume",        "u8",    lambda v: v in (0, 1),       "0/1 (ignore the volume change from SetStateData(game or software))"),
     ("status_gpio_pin",    "u8",    lambda v: 0 <= v <= 255,     "GPIO number (255 disables; firmware rejects board-reserved pins)"),
     ("status_gpio_mode",   "u8",    lambda v: v in (0, 1),       "0:pull high 1:200ms button pulse"),
+    ("button_remap",       "remap", lambda v: len(v) == BUTTON_COUNT,
+                                                               f"{BUTTON_COUNT}-entry button remap table (use the 'remap' command)"),
 ]
 FIELD_NAMES = [f[0] for f in FIELDS]
 # Little-endian, no padding -- matches __attribute__((packed)) Config_body.
 STRUCT_FMT = "<" + "".join(KIND_TO_CODE[f[1]] for f in FIELDS)
 BODY_SIZE = struct.calcsize(STRUCT_FMT)
+if BODY_SIZE > SET_DATA_LEN - 1:
+    raise RuntimeError(
+        f"Config_body is {BODY_SIZE} bytes, but the update report only has "
+        f"{SET_DATA_LEN - 1} bytes available."
+    )
+
+
+def unpack_config(body):
+    unpacked = iter(struct.unpack(STRUCT_FMT, body))
+    cfg = {}
+    for name, kind, _validator, _helptext in FIELDS:
+        if kind == "remap":
+            cfg[name] = list(next(unpacked) for _ in range(BUTTON_COUNT))
+        else:
+            cfg[name] = next(unpacked)
+    return cfg
+
+
+def pack_config(cfg):
+    values = []
+    for name, kind, validator, _helptext in FIELDS:
+        value = cfg[name]
+        if not validator(value):
+            raise ValueError(f"Invalid value for {name}: {value!r}")
+        if kind == "remap":
+            values.extend(value)
+        else:
+            values.append(value)
+    return struct.pack(STRUCT_FMT, *values)
 
 
 def is_gamepad_hid(devinfo):
@@ -136,8 +247,7 @@ def read_config(dev):
     body = bytes(data[1:1 + BODY_SIZE]) if data[0] == REPORT_GET_CONFIG else bytes(data[:BODY_SIZE])
     if len(body) < BODY_SIZE:
         sys.exit(f"Short config read: got {len(body)} bytes, expected {BODY_SIZE}.")
-    values = struct.unpack(STRUCT_FMT, body)
-    return dict(zip(FIELD_NAMES, values))
+    return unpack_config(body)
 
 def read_version(dev):
     try:
@@ -147,26 +257,59 @@ def read_version(dev):
     raw = bytes(data[1:]) if data and data[0] == REPORT_GET_VERSION else bytes(data or b"")
     return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
 
+def send_feature_report(dev, data, operation):
+    report = bytes([REPORT_SET]) + data
+    try:
+        sent = dev.send_feature_report(report)
+    except OSError as exc:
+        sys.exit(f"Failed {operation}: {exc}")
+    if sent is not None and sent != len(report):
+        sys.exit(
+            f"Failed {operation}: wrote {sent} of {len(report)} report bytes."
+        )
+    time.sleep(HID_SET_REPORT_DELAY)
+
+
 def write_config(dev, cfg, save):
-    body = struct.pack(STRUCT_FMT, *[cfg[name] for name in FIELD_NAMES])
+    body = pack_config(cfg)
     # [report id][funcid 0x01][body...] padded to SET_DATA_LEN data bytes.
     data = bytes([FUNC_UPDATE]) + body
     data = data[:SET_DATA_LEN].ljust(SET_DATA_LEN, b"\x00")
-    dev.send_feature_report(bytes([REPORT_SET]) + data)
+    send_feature_report(dev, data, "updating config")
+
+    # This read is also a USB control-transfer barrier: do not submit FUNC_SAVE
+    # until the firmware has applied FUNC_UPDATE.  It is the authoritative
+    # value to display because firmware validation may clamp some fields.
+    new_cfg = read_config(dev)
+
     if save:
         save_data = bytes([FUNC_SAVE]).ljust(SET_DATA_LEN, b"\x00")
-        dev.send_feature_report(bytes([REPORT_SET]) + save_data)
+        send_feature_report(dev, save_data, "saving config to flash")
+        # Confirm that the device still answers after the flash operation.
+        new_cfg = read_config(dev)
+    return new_cfg
 
 
 def fmt_value(name, value):
     if name == "haptics_gain":
         return f"{value:.3f}"
+    if name == "button_remap":
+        mappings = [
+            f"{BUTTON_NAMES[source]}->{button_name(target)}"
+            for source, target in enumerate(value)
+            if source not in (0, BUTTON_COUNT - 1) and target != 0
+        ]
+        return ", ".join(mappings) if mappings else "none"
     return str(value)
 
 
 def print_config(cfg):
     width = max(len(n) for n in FIELD_NAMES)
     for name, _kind, _ok, helptext in FIELDS:
+        if name == "button_remap":
+            print(f"  {name:<{width}} =  # {helptext}")
+            print_remaps(cfg[name], indent="    ")
+            continue
         print(f"  {name:<{width}} = {fmt_value(name, cfg[name]):<8}  # {helptext}")
 
 
@@ -180,6 +323,8 @@ def parse_assignment(token):
     if name == "config_version":
         sys.exit("config_version is managed by the firmware and cannot be set.")
     kind = dict((f[0], f[1]) for f in FIELDS)[name]
+    if kind == "remap":
+        sys.exit("button_remap cannot be set as a scalar; use 'config_tool.py remap source=target'.")
     validator = dict((f[0], f[2]) for f in FIELDS)[name]
     try:
         value = float(raw) if kind == "float" else int(raw, 0)
@@ -220,8 +365,7 @@ def cmd_set(args):
     try:
         cfg = read_config(dev)
         cfg.update(updates)
-        write_config(dev, cfg, save=not args.no_save)
-        new_cfg = read_config(dev)
+        new_cfg = write_config(dev, cfg, save=not args.no_save)
     finally:
         dev.close()
     print("Updated:" + ("" if args.no_save else " (saved to flash)"))
@@ -233,6 +377,65 @@ def cmd_set(args):
         adjusted = abs(got - want) > 1e-6 if isinstance(want, float) else got != want
         if adjusted:
             print(f"  note: {name} was clamped by firmware to {fmt_value(name, got)}")
+
+
+def parse_button(raw, *, source):
+    key = normalize_button_name(raw)
+    if key not in BUTTON_NAME_TO_ID:
+        valid = ", ".join(BUTTON_NAMES[1:-1])
+        sys.exit(f"Unknown button '{raw}'. Valid buttons: {valid}.")
+    button_id = BUTTON_NAME_TO_ID[key]
+    if source and button_id in (0, BUTTON_COUNT - 1):
+        sys.exit(f"'{raw}' cannot be used as a source button.")
+    return button_id
+
+
+def button_name(button_id):
+    return BUTTON_NAMES[button_id] if 0 <= button_id < BUTTON_COUNT else f"Invalid({button_id})"
+
+
+def parse_remap_assignment(token):
+    if "=" not in token:
+        sys.exit(f"Bad remap '{token}', expected source=target.")
+    source_raw, target_raw = token.split("=", 1)
+    source_id = parse_button(source_raw.strip(), source=True)
+    target_id = parse_button(target_raw.strip(), source=False)
+    return source_id, target_id
+
+
+def print_remaps(remap, indent="  "):
+    for source in range(1, BUTTON_COUNT - 1):
+        target = remap[source]
+        print(f"{indent}{BUTTON_NAMES[source]:<15} -> {button_name(target)}")
+
+
+def cmd_remap(args):
+    updates = dict(parse_remap_assignment(token) for token in args.assignments)
+    dev = open_device()
+    try:
+        cfg = read_config(dev)
+        if not updates:
+            print("Button remaps:")
+            print_remaps(cfg["button_remap"])
+            return
+        for source, target in updates.items():
+            cfg["button_remap"][source] = target
+        new_cfg = write_config(dev, cfg, save=not args.no_save)
+    finally:
+        dev.close()
+
+    for source in updates:
+        target = new_cfg["button_remap"][source]
+        if target != updates[source]:
+            sys.exit(
+                f"Read-back verification failed for {BUTTON_NAMES[source]}: "
+                f"requested {button_name(updates[source])}, got {button_name(target)}."
+            )
+
+    print("Updated button remaps:" + ("" if args.no_save else " (saved to flash)"))
+    for source in updates:
+        target = new_cfg["button_remap"][source]
+        print(f"  {BUTTON_NAMES[source]:<15} -> {button_name(target)}")
 
 
 def main():
@@ -247,6 +450,15 @@ def main():
     p_set.add_argument("--no-save", action="store_true",
                        help="update RAM only; do not persist to flash")
     p_set.set_defaults(func=cmd_set)
+
+    p_remap = sub.add_parser(
+        "remap",
+        help="view or set button remaps (source=target; target nomap clears, disable blocks)",
+    )
+    p_remap.add_argument("assignments", nargs="*", metavar="source=target")
+    p_remap.add_argument("--no-save", action="store_true",
+                         help="update RAM only; do not persist to flash")
+    p_remap.set_defaults(func=cmd_remap)
 
     args = parser.parse_args()
     args.func(args)
