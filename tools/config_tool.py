@@ -20,7 +20,7 @@ Examples:
   python config_tool.py set haptics_gain=1.5 --no-save
   python config_tool.py remap
   python config_tool.py remap square=cross l1=disable
-  python config_tool.py remap square=nomap
+  python config_tool.py remap square=nomap  # clear (restore identity mapping)
   python config_tool.py fields
 """
 import argparse
@@ -63,7 +63,6 @@ HID_SET_REPORT_DELAY = 0.05
 CONFIG_VERSION = 5       # src/config.cpp CONFIG_VERSION (display only)
 
 BUTTON_NAMES = (
-    "NoMap",
     "DPadNorth",
     "DPadNorthEast",
     "DPadEast",
@@ -127,9 +126,12 @@ BUTTON_NAME_TO_ID.update({
     "nw": BUTTON_NAME_TO_ID["dpadnorthwest"],
     "ps": BUTTON_NAME_TO_ID["home"],
     "touchpad": BUTTON_NAME_TO_ID["pad"],
-    "none": BUTTON_NAME_TO_ID["nomap"],
     "off": BUTTON_NAME_TO_ID["disable"],
 })
+
+# These are CLI-only conveniences, not Button enum members. Clearing a remap
+# now writes the source button's own ID (an identity mapping) to the table.
+CLEAR_REMAP_NAMES = {"nomap", "none", "default", "self"}
 
 # struct.pack/unpack codes per field kind.
 KIND_TO_CODE = {"u8": "B", "float": "f", "remap": f"{BUTTON_COUNT}B"}
@@ -297,7 +299,7 @@ def fmt_value(name, value):
         mappings = [
             f"{BUTTON_NAMES[source]}->{button_name(target)}"
             for source, target in enumerate(value)
-            if source not in (0, BUTTON_COUNT - 1) and target != 0
+            if source != BUTTON_COUNT - 1 and target != source
         ]
         return ", ".join(mappings) if mappings else "none"
     return str(value)
@@ -382,10 +384,11 @@ def cmd_set(args):
 def parse_button(raw, *, source):
     key = normalize_button_name(raw)
     if key not in BUTTON_NAME_TO_ID:
-        valid = ", ".join(BUTTON_NAMES[1:-1])
+        valid_names = BUTTON_NAMES[:-1] if source else BUTTON_NAMES + ("NoMap",)
+        valid = ", ".join(valid_names)
         sys.exit(f"Unknown button '{raw}'. Valid buttons: {valid}.")
     button_id = BUTTON_NAME_TO_ID[key]
-    if source and button_id in (0, BUTTON_COUNT - 1):
+    if source and button_id == BUTTON_COUNT - 1:
         sys.exit(f"'{raw}' cannot be used as a source button.")
     return button_id
 
@@ -399,12 +402,14 @@ def parse_remap_assignment(token):
         sys.exit(f"Bad remap '{token}', expected source=target.")
     source_raw, target_raw = token.split("=", 1)
     source_id = parse_button(source_raw.strip(), source=True)
-    target_id = parse_button(target_raw.strip(), source=False)
+    target_key = normalize_button_name(target_raw.strip())
+    target_id = (source_id if target_key in CLEAR_REMAP_NAMES else
+                 parse_button(target_raw.strip(), source=False))
     return source_id, target_id
 
 
 def print_remaps(remap, indent="  "):
-    for source in range(1, BUTTON_COUNT - 1):
+    for source in range(BUTTON_COUNT - 1):
         target = remap[source]
         print(f"{indent}{BUTTON_NAMES[source]:<15} -> {button_name(target)}")
 
@@ -453,7 +458,7 @@ def main():
 
     p_remap = sub.add_parser(
         "remap",
-        help="view or set button remaps (source=target; target nomap clears, disable blocks)",
+        help="view or set button remaps (source=target; nomap restores identity, disable blocks)",
     )
     p_remap.add_argument("assignments", nargs="*", metavar="source=target")
     p_remap.add_argument("--no-save", action="store_true",

@@ -106,14 +106,14 @@ void button_remap_apply(USBGetStateData &state_data) {
     // Clear every configured physical source first. Targets are populated from
     // state_copy below, so mappings do not depend on enum order.
     for (uint8_t i = 0; i < sizeof(remap_table); i++) {
-        if (remap_table[i] != NoMap) {
+        if (remap_table[i] != i) {
             disable_state_value(state_data, i);
         }
     }
 
     // Button remap
     for (uint8_t i = 0; i < sizeof(remap_table); i++) {
-        if (remap_table[i] == NoMap || remap_table[i] == Disable) {
+        if (remap_table[i] == i || remap_table[i] == Disable) {
             continue;
         }
 

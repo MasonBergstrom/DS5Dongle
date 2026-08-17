@@ -9,9 +9,8 @@
 struct USBGetStateData;
 
 enum Button: uint8_t {
-    NoMap = 0,
     // DPad
-    DPadNorth,
+    DPadNorth = 0,
     DPadNorthEast,
     DPadEast,
     DPadSouthEast,
