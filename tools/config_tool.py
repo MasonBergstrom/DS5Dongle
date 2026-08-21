@@ -5,6 +5,7 @@ Read and modify the ds5dongle configuration over USB HID, without reflashing.
 Protocol (see src/cmd.cpp / src/config.h):
   GET feature report 0xF7 -> raw Config_body bytes
   GET feature report 0xF8 -> firmware version string
+  GET/SET feature report 0xFA -> Button settings area (currently 28 bytes)
   SET feature report 0xF6:
       funcid 0x01 + body   -> update config in RAM (firmware clamps invalid values)
       funcid 0x02          -> persist config to flash
@@ -45,6 +46,7 @@ HID_USAGE_GAMEPAD = 0x05
 REPORT_SET = 0xF6        # SET_REPORT: write/save config
 REPORT_GET_CONFIG = 0xF7  # GET_REPORT: read Config_body
 REPORT_GET_VERSION = 0xF8  # GET_REPORT: firmware version string
+REPORT_BUTTON = 0xFA      # GET/SET_REPORT: Button settings area
 
 FUNC_UPDATE = 0x01       # update config in RAM
 FUNC_SAVE = 0x02         # persist to flash
@@ -129,12 +131,12 @@ BUTTON_NAME_TO_ID.update({
     "off": BUTTON_NAME_TO_ID["disable"],
 })
 
-# These are CLI-only conveniences, not Button enum members. Clearing a remap
+# These are CLI-only conveniences, not ButtonId enum members. Clearing a remap
 # now writes the source button's own ID (an identity mapping) to the table.
 CLEAR_REMAP_NAMES = {"nomap", "none", "default", "self"}
 
 # struct.pack/unpack codes per field kind.
-KIND_TO_CODE = {"u8": "B", "float": "f", "remap": f"{BUTTON_COUNT}B"}
+KIND_TO_CODE = {"u8": "B", "float": "f"}
 
 # FIELDS is the single source of truth for the packed Config_body layout
 # (src/config.h). To add/remove/reorder a field, edit ONLY this table -- the
@@ -160,8 +162,6 @@ FIELDS = [
     ("lock_volume",        "u8",    lambda v: v in (0, 1),       "0/1 (ignore the volume change from SetStateData(game or software))"),
     ("status_gpio_pin",    "u8",    lambda v: 0 <= v <= 255,     "GPIO number (255 disables; firmware rejects board-reserved pins)"),
     ("status_gpio_mode",   "u8",    lambda v: v in (0, 1),       "0:pull high 1:200ms button pulse"),
-    ("button_remap",       "remap", lambda v: len(v) == BUTTON_COUNT,
-                                                               f"{BUTTON_COUNT}-entry button remap table (use the 'remap' command)"),
 ]
 FIELD_NAMES = [f[0] for f in FIELDS]
 # Little-endian, no padding -- matches __attribute__((packed)) Config_body.
@@ -178,10 +178,7 @@ def unpack_config(body):
     unpacked = iter(struct.unpack(STRUCT_FMT, body))
     cfg = {}
     for name, kind, _validator, _helptext in FIELDS:
-        if kind == "remap":
-            cfg[name] = list(next(unpacked) for _ in range(BUTTON_COUNT))
-        else:
-            cfg[name] = next(unpacked)
+        cfg[name] = next(unpacked)
     return cfg
 
 
@@ -191,10 +188,7 @@ def pack_config(cfg):
         value = cfg[name]
         if not validator(value):
             raise ValueError(f"Invalid value for {name}: {value!r}")
-        if kind == "remap":
-            values.extend(value)
-        else:
-            values.append(value)
+        values.append(value)
     return struct.pack(STRUCT_FMT, *values)
 
 
@@ -259,8 +253,21 @@ def read_version(dev):
     raw = bytes(data[1:]) if data and data[0] == REPORT_GET_VERSION else bytes(data or b"")
     return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
 
-def send_feature_report(dev, data, operation):
-    report = bytes([REPORT_SET]) + data
+
+def read_button(dev):
+    try:
+        data = dev.get_feature_report(REPORT_BUTTON, BUTTON_COUNT + 1)
+    except OSError as exc:
+        sys.exit(f"Failed reading Button report 0x{REPORT_BUTTON:02X}: {exc}")
+    if not data:
+        sys.exit("Empty response reading Button settings (report 0xFA). Is the firmware current?")
+    raw = bytes(data[1:]) if data[0] == REPORT_BUTTON else bytes(data)
+    if len(raw) < BUTTON_COUNT:
+        sys.exit(f"Short Button settings read: got {len(raw)} bytes, expected {BUTTON_COUNT}.")
+    return bytearray(raw[:BUTTON_COUNT])
+
+def send_feature_report(dev, data, operation, report_id=REPORT_SET):
+    report = bytes([report_id]) + data
     try:
         sent = dev.send_feature_report(report)
     except OSError as exc:
@@ -292,26 +299,27 @@ def write_config(dev, cfg, save):
     return new_cfg
 
 
+def write_button(dev, button, save):
+    send_feature_report(
+        dev, bytes(button), "updating Button settings", report_id=REPORT_BUTTON
+    )
+    new_button = read_button(dev)
+    if save:
+        save_data = bytes([FUNC_SAVE]).ljust(SET_DATA_LEN, b"\x00")
+        send_feature_report(dev, save_data, "saving Button settings to flash")
+        new_button = read_button(dev)
+    return new_button
+
+
 def fmt_value(name, value):
     if name == "haptics_gain":
         return f"{value:.3f}"
-    if name == "button_remap":
-        mappings = [
-            f"{BUTTON_NAMES[source]}->{button_name(target)}"
-            for source, target in enumerate(value)
-            if source != BUTTON_COUNT - 1 and target != source
-        ]
-        return ", ".join(mappings) if mappings else "none"
     return str(value)
 
 
 def print_config(cfg):
     width = max(len(n) for n in FIELD_NAMES)
     for name, _kind, _ok, helptext in FIELDS:
-        if name == "button_remap":
-            print(f"  {name:<{width}} =  # {helptext}")
-            print_remaps(cfg[name], indent="    ")
-            continue
         print(f"  {name:<{width}} = {fmt_value(name, cfg[name]):<8}  # {helptext}")
 
 
@@ -325,8 +333,6 @@ def parse_assignment(token):
     if name == "config_version":
         sys.exit("config_version is managed by the firmware and cannot be set.")
     kind = dict((f[0], f[1]) for f in FIELDS)[name]
-    if kind == "remap":
-        sys.exit("button_remap cannot be set as a scalar; use 'config_tool.py remap source=target'.")
     validator = dict((f[0], f[2]) for f in FIELDS)[name]
     try:
         value = float(raw) if kind == "float" else int(raw, 0)
@@ -351,12 +357,15 @@ def cmd_get(_args):
     try:
         version = read_version(dev)
         cfg = read_config(dev)
+        remap = read_button(dev)
     finally:
         dev.close()
     if version:
         print(f"Firmware: {version}")
     print("Config:")
     print_config(cfg)
+    print("Button remaps:")
+    print_remaps(remap)
 
 
 def cmd_set(args):
@@ -418,19 +427,19 @@ def cmd_remap(args):
     updates = dict(parse_remap_assignment(token) for token in args.assignments)
     dev = open_device()
     try:
-        cfg = read_config(dev)
+        remap = read_button(dev)
         if not updates:
             print("Button remaps:")
-            print_remaps(cfg["button_remap"])
+            print_remaps(remap)
             return
         for source, target in updates.items():
-            cfg["button_remap"][source] = target
-        new_cfg = write_config(dev, cfg, save=not args.no_save)
+            remap[source] = target
+        new_remap = write_button(dev, remap, save=not args.no_save)
     finally:
         dev.close()
 
     for source in updates:
-        target = new_cfg["button_remap"][source]
+        target = new_remap[source]
         if target != updates[source]:
             sys.exit(
                 f"Read-back verification failed for {BUTTON_NAMES[source]}: "
@@ -439,7 +448,7 @@ def cmd_remap(args):
 
     print("Updated button remaps:" + ("" if args.no_save else " (saved to flash)"))
     for source in updates:
-        target = new_cfg["button_remap"][source]
+        target = new_remap[source]
         print(f"  {BUTTON_NAMES[source]:<15} -> {button_name(target)}")
 
 

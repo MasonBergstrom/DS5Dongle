@@ -20,21 +20,23 @@
 constexpr uint32_t CONFIG_MAGIC = 0x66ccff00;
 constexpr uint16_t CONFIG_VERSION = 5; // 如果想要强制重置配置，再更新 CONFIG_VERSION。
 constexpr uint32_t CONFIG_FLASH_OFFSET = PICO_FLASH_BANK_STORAGE_OFFSET - FLASH_SECTOR_SIZE;
-static Config config{};
+static ConfigStorage storage{};
+static Config &config = storage.config;
 bool is_dse = false;
 
 // 编译期保护
-// 判断Config结构体是否能放进flash 256bytes
-static_assert(sizeof(Config) <= FLASH_PAGE_SIZE);
+// 判断完整配置存储结构是否能放进 flash 256 bytes
+static_assert(sizeof(ConfigStorage) <= FLASH_PAGE_SIZE);
 // 配置区起始地址必须按 flash sector 对齐。
 static_assert(CONFIG_FLASH_OFFSET % FLASH_SECTOR_SIZE == 0);
 
-static uint32_t calc_config_crc(const Config &con) {
-    return crc32(reinterpret_cast<const uint8_t *>(&con.body), sizeof(Config_body));
+static uint32_t calc_config_crc(const ConfigStorage &con) {
+    return crc32(reinterpret_cast<const uint8_t *>(&con.config.body),
+                 sizeof(ConfigStorage) - offsetof(Config, body));
 }
 
-static const Config *get_xip_addr(uint32_t offset) {
-    return reinterpret_cast<const Config *>(XIP_BASE + offset);
+static const ConfigStorage *get_xip_addr(uint32_t offset) {
+    return reinterpret_cast<const ConfigStorage *>(XIP_BASE + offset);
 }
 
 static bool load_old_config() {
@@ -43,8 +45,8 @@ static bool load_old_config() {
     memcpy(&magic_header, old_addr, sizeof(uint32_t));
     if (magic_header == CONFIG_MAGIC) {
         printf("[Config] Trying load old sector config\n");
-        memset(&config, 0xFF, sizeof(Config)); // 先进行 0xFF 填充，确保后续缺项能够正常初始化
-        memcpy(&config, old_addr, sizeof(Config));
+        memset(&storage, 0xFF, sizeof(storage)); // 先进行 0xFF 填充，确保后续缺项能够正常初始化
+        memcpy(&storage, old_addr, sizeof(storage));
         printf("[Config] Old Config loaded\n");
         return true;
     }
@@ -141,16 +143,20 @@ void config_valid() {
         body->status_gpio_mode = 0;
         printf("[Config] status_gpio_mode is invalid\n");
     }
-    for (int i = 0;i < sizeof(Button);i++) {
-        if (i >= sizeof(Button)) {
-            printf("[Config] Button remap value is invalid %d\n",v);
-            body->button_remap[i] = i;
+    button_valid();
+}
+
+void button_valid() {
+    for (uint8_t i = 0; i < 28; i++) {
+        if (storage.button.button_remap[i] > Disable) {
+            printf("[Config] Button remap value is invalid %u\n", storage.button.button_remap[i]);
+            storage.button.button_remap[i] = i;
         }
     }
 }
 
 void config_load() {
-    memcpy(&config, get_xip_addr(CONFIG_FLASH_OFFSET), sizeof(Config));
+    memcpy(&storage, get_xip_addr(CONFIG_FLASH_OFFSET), sizeof(storage));
 
     config_valid();
 }
@@ -167,10 +173,10 @@ static void config_save_flash_op(void *param) {
 }
 
 bool config_save() {
-    config.crc32 = calc_config_crc(config);
+    config.crc32 = calc_config_crc(storage);
     alignas(4) uint8_t page[FLASH_PAGE_SIZE];
     memset(page, 0xff, sizeof(page));
-    memcpy(page, &config, sizeof(Config));
+    memcpy(page, &storage, sizeof(storage));
 
     const int rc = flash_safe_execute(config_save_flash_op, page, 1000);
     if (rc != PICO_OK) {
@@ -178,7 +184,7 @@ bool config_save() {
         return false;
     }
 
-    Config verify{};
+    ConfigStorage verify{};
     memcpy(&verify, get_xip_addr(CONFIG_FLASH_OFFSET), sizeof(verify));
     const auto verify_crc32 = calc_config_crc(verify);
     if (verify_crc32 == config.crc32) {
@@ -191,6 +197,16 @@ bool config_save() {
 
 Config_body& get_config() {
     return config.body;
+}
+
+Button& get_button() {
+    return storage.button;
+}
+
+void set_button(const uint8_t *new_button, const uint16_t len) {
+    const auto copy_len = len < sizeof(Button) ? len : sizeof(Button);
+    memcpy(&storage.button, new_button, copy_len);
+    button_valid();
 }
 
 void set_config(const uint8_t *new_config, const uint16_t len) {

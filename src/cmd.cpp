@@ -21,7 +21,8 @@ bool is_pico_cmd(uint8_t report_id) {
     if (report_id == 0xf6 ||
         report_id == 0xf7 ||
         report_id == 0xf8 ||
-        report_id == 0xf9
+        report_id == 0xf9 ||
+        report_id == 0xfa
     ) {
         return true;
     }
@@ -68,12 +69,23 @@ uint16_t pico_cmd_get(uint8_t report_id, uint8_t *buffer, uint16_t reqlen) {
 #endif
         return 1;
     }
+    if (report_id == 0xfa) {
+        printf("[HID] Receive 0xfa getting Button settings\n");
+        const auto len = std::min(sizeof(Button), static_cast<size_t>(reqlen));
+        memcpy(buffer, &get_button(), len);
+        return len;
+    }
     return 0;
 }
 
 void pico_cmd_set(uint8_t report_id, uint8_t const *buffer, uint16_t bufsize) {
-    (void) report_id;
     if (bufsize == 0) {
+        return;
+    }
+
+    if (report_id == 0xfa) {
+        printf("[HID] Receive 0xfa setting Button settings\n");
+        set_button(buffer, bufsize);
         return;
     }
 

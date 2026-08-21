@@ -8,7 +8,7 @@
 
 struct USBGetStateData;
 
-enum Button: uint8_t {
+enum ButtonId: uint8_t {
     // DPad
     DPadNorth = 0,
     DPadNorthEast,

@@ -5,7 +5,13 @@
 #ifndef DS5_BRIDGE_CONFIG_H
 #define DS5_BRIDGE_CONFIG_H
 
+#include <cstddef>
 #include <cstdint>
+
+constexpr uint16_t CONFIG_STORAGE_SIZE = 64;
+
+//    64 bytes    |    64 bytes
+//     Config     |     Button
 
 struct __attribute__((packed)) Config_body {
     uint8_t config_version; // Config Version
@@ -27,24 +33,39 @@ struct __attribute__((packed)) Config_body {
     uint8_t lock_volume; // bool
     uint8_t status_gpio_pin; // board-usable GPIO, 0xff: disabled
     uint8_t status_gpio_mode; // 0: high while connected, 1: button pulse on connect
-    uint8_t button_remap[28]; // one entry per Button enum value, orig_btn:target_btn
 };
 
-static_assert(sizeof(Config_body) <= 63);
+static_assert(sizeof(Config_body) + 1 <= 63); // 0xF6 funcid + body
 
 struct __attribute__((packed)) Config {
     uint32_t magic;
-    uint32_t crc32; // Config_body crc32, only calc and verify when save
+    uint32_t crc32; // ConfigStorage payload crc32, only calc and verify when save
     uint16_t size;  // Config_body size
     Config_body body;
+    uint8_t reserved[CONFIG_STORAGE_SIZE - 10 - sizeof(Config_body)];
 };
+
+struct __attribute__((packed)) Button {
+    uint8_t button_remap[28]; // orig_btn:target_btn
+};
+
+struct __attribute__((packed)) ConfigStorage {
+    Config config;
+    Button button;
+};
+
+static_assert(offsetof(ConfigStorage, button) == CONFIG_STORAGE_SIZE);
+static_assert(sizeof(Button) <= 63); // 0xFA Feature Report payload
 
 void config_default();
 void config_load();
 bool config_save();
 Config_body& get_config();
+Button& get_button();
 void set_config(const uint8_t *new_config, const uint16_t len);
+void set_button(const uint8_t *new_button, uint16_t len);
 void config_valid();
+void button_valid();
 void set_config(const Config_body &new_config);
 extern bool is_dse;
 

@@ -100,7 +100,7 @@ void button_remap_apply(USBGetStateData &state_data) {
     // 然后遍历按键映射表。
     // 如果目标按键有映射，那就将目标按键的状态设置为原始按键状态
 
-    const auto &remap_table = get_config().button_remap;
+    const auto &remap_table = get_button().button_remap;
     const USBGetStateData state_copy = state_data;
 
     // Clear every configured physical source first. Targets are populated from
