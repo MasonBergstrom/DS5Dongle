@@ -124,6 +124,8 @@ add_executable(ds5-bridge
         src/fake_ds5.h
         src/button_remap.cpp
         src/button_remap.h
+        src/button_utils.cpp
+        src/button_utils.h
 )
 
 if (ENABLE_DEBUG)
@@ -308,15 +310,15 @@ target_compile_definitions(ds5-bridge PRIVATE
         DISABLE_SPEAKER_PROC=${DISABLE_SPEAKER_PROC_VALUE}
 )
 
-# Wake-on-PS + Xbox Game Bar are now in the base firmware, gated at runtime by the
-# enable_wake / ps_shortcut_enabled config fields. ENABLE_WAKE_HID stays defined so
+# Wake-on-PS + keyboard shortcuts are in the base firmware, gated at runtime by the
+# wake config and Button shortcut slots. ENABLE_WAKE_HID stays defined so
 # the wake/keyboard descriptors and TinyUSB capacity compile in; the interface and
 # behavior are only presented/run when enabled at runtime (see usb_descriptors.cpp,
 # wake.cpp).
 target_compile_definitions(ds5-bridge PRIVATE ENABLE_WAKE_HID)
 target_sources(ds5-bridge PRIVATE
         src/wake.cpp
-        src/ps_shortcut.cpp
+        src/button_shortcut.cpp
 )
 
 option(WAKE_DEBUG "Print wake-FSM transitions to UART (developer use)" OFF)

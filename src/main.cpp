@@ -15,9 +15,7 @@
 #include "debug.h"
 #endif
 #include "wake.h"
-#ifdef ENABLE_WAKE_HID
-#include "ps_shortcut.h"
-#endif
+#include "button_shortcut.h"
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/watchdog.h"
@@ -114,19 +112,16 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         // diff for edge detection) and short-circuiting it on non-2 polling
         // modes silently breaks wake while the host is suspended.
         wake_on_bt_input(data + 3, len - 3);
-        #ifdef ENABLE_WAKE_HID
-        ps_shortcut_tick(data + 3, len - 3);
-        #endif
+        memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
+        button_shortcut_tick(interrupt_in_data);
 
         if (get_config().polling_rate_mode != 2) {
-            memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif
             return;
         }
 
-        memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
         report_dirty = true;
 #if ENABLE_BATT_LED
         battery_led_note_report();

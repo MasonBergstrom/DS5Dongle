@@ -97,7 +97,7 @@
 //------------- CLASS -------------//
 #define CFG_TUD_AUDIO             1
 #ifdef ENABLE_WAKE_HID
-#define CFG_TUD_HID               2
+#define CFG_TUD_HID               3
 #else
 #define CFG_TUD_HID               1
 #endif

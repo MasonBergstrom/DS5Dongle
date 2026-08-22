@@ -22,7 +22,8 @@ bool is_pico_cmd(uint8_t report_id) {
         report_id == 0xf7 ||
         report_id == 0xf8 ||
         report_id == 0xf9 ||
-        report_id == 0xfa
+        report_id == 0xfa ||
+        report_id == 0xfb
     ) {
         return true;
     }
@@ -70,9 +71,16 @@ uint16_t pico_cmd_get(uint8_t report_id, uint8_t *buffer, uint16_t reqlen) {
         return 1;
     }
     if (report_id == 0xfa) {
-        printf("[HID] Receive 0xfa getting Button settings\n");
-        const auto len = std::min(sizeof(Button), static_cast<size_t>(reqlen));
-        memcpy(buffer, &get_button(), len);
+        printf("[HID] Receive 0xfa getting button remaps\n");
+        const auto len = std::min(static_cast<size_t>(BUTTON_REMAP_COUNT),
+                                  static_cast<size_t>(reqlen));
+        memcpy(buffer, get_button().button_remap, len);
+        return len;
+    }
+    if (report_id == 0xfb) {
+        printf("[HID] Receive 0xfb getting shortcut slots\n");
+        const auto len = std::min(sizeof(Button::shortcuts), static_cast<size_t>(reqlen));
+        memcpy(buffer, get_button().shortcuts, len);
         return len;
     }
     return 0;
@@ -84,8 +92,14 @@ void pico_cmd_set(uint8_t report_id, uint8_t const *buffer, uint16_t bufsize) {
     }
 
     if (report_id == 0xfa) {
-        printf("[HID] Receive 0xfa setting Button settings\n");
-        set_button(buffer, bufsize);
+        printf("[HID] Receive 0xfa setting button remaps\n");
+        set_button_remap(buffer, bufsize);
+        return;
+    }
+
+    if (report_id == 0xfb) {
+        printf("[HID] Receive 0xfb setting shortcut slots\n");
+        set_shortcut(buffer, bufsize);
         return;
     }
 

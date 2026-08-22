@@ -8,7 +8,8 @@
 #include <cstring>
 
 #include "bt.h"
-#include "button_remap.h"
+#include "button_shortcut.h"
+#include "button_utils.h"
 #include "status_gpio.h"
 #include "utils.h"
 #include "hardware/flash.h"
@@ -111,9 +112,9 @@ void config_valid() {
         body->enable_usb_sn = 0;
         printf("[Config] Warning: enable_usb_sn is invalid\n");
     }
-    if (body->ps_shortcut_enabled > 1) {
-        body->ps_shortcut_enabled = 0;
-        printf("[Config] ps_shortcut_enabled is invalid\n");
+    if (body->enable_keyboard > 1) {
+        body->enable_keyboard = 0;
+        printf("[Config] enable_keyboard is invalid\n");
     }
     if (body->mic_select > 3) {
         body->mic_select = 0;
@@ -143,14 +144,42 @@ void config_valid() {
         body->status_gpio_mode = 0;
         printf("[Config] status_gpio_mode is invalid\n");
     }
-    button_valid();
+    button_remap_valid();
+    shortcut_valid();
 }
 
-void button_valid() {
-    for (uint8_t i = 0; i < 28; i++) {
+void button_remap_valid() {
+    for (uint8_t i = 0; i < BUTTON_REMAP_COUNT; i++) {
         if (storage.button.button_remap[i] > Disable) {
             printf("[Config] Button remap value is invalid %u\n", storage.button.button_remap[i]);
             storage.button.button_remap[i] = i;
+        }
+    }
+}
+
+void shortcut_valid() {
+    for (auto &shortcut : storage.button.shortcuts) {
+        if (!shortcut_slot_valid(shortcut)) {
+            // Slot enablement is represented only by trigger_a; normalize every
+            // invalid or disabled slot to one deterministic byte representation.
+            shortcut.trigger_a = BUTTON_SHORTCUT_DISABLED;
+            shortcut.trigger_b = BUTTON_SHORTCUT_DISABLED;
+            shortcut.action = ShortcutActionKeyboard;
+            shortcut.flags = 0;
+            memset(shortcut.payload, 0, sizeof(shortcut.payload));
+            continue;
+        }
+        switch (shortcut.action) {
+            case ShortcutActionKeyboard:
+                shortcut.keyboard.reserved = 0;
+                break;
+            case ShortcutActionConsumer:
+                shortcut.consumer.reserved = 0;
+                break;
+            default:
+                // Firmware actions do not consume the payload bytes.
+                memset(shortcut.payload, 0, sizeof(shortcut.payload));
+                break;
         }
     }
 }
@@ -203,10 +232,17 @@ Button& get_button() {
     return storage.button;
 }
 
-void set_button(const uint8_t *new_button, const uint16_t len) {
-    const auto copy_len = len < sizeof(Button) ? len : sizeof(Button);
-    memcpy(&storage.button, new_button, copy_len);
-    button_valid();
+void set_button_remap(const uint8_t *new_remap, const uint16_t len) {
+    const auto copy_len = len < BUTTON_REMAP_COUNT ? len : BUTTON_REMAP_COUNT;
+    memcpy(storage.button.button_remap, new_remap, copy_len);
+    button_remap_valid();
+}
+
+void set_shortcut(const uint8_t *new_shortcuts, const uint16_t len) {
+    constexpr auto room = sizeof(Button::shortcuts);
+    const auto copy_len = len < room ? len : room;
+    memcpy(storage.button.shortcuts, new_shortcuts, copy_len);
+    shortcut_valid();
 }
 
 void set_config(const uint8_t *new_config, const uint16_t len) {

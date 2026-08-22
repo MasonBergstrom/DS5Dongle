@@ -241,26 +241,58 @@ Use `tools/build-macos.sh --clean` to rebuild from scratch, or
 to the required Pico SDK and TinyUSB versions. If Homebrew's `arm-none-eabi-gcc` formula is installed without standard C
 headers, the script asks to install the complete `gcc-arm-embedded` cask and points CMake at that toolchain.
 
-## Xbox Game Bar (optional)
+## Custom button chords
 
-The **PS button = Xbox Game Bar** toggle in the [web config](#configuration) maps the controller's PS button to
-keyboard shortcuts, sent over the same HID keyboard interface used by [Wake-on-PS](#wake-on-ps-optional):
+The Button settings support up to 9 custom shortcut mappings. Each mapping assigns a
+trigger to a keyboard shortcut, media key, or firmware action.
 
-- **Short press** (tap and release) → `Win`+`G`, which opens the **Xbox Game Bar** overlay.
-- **Long press** (hold ≥ 750 ms) → `Win`+`Tab`, which opens **Task View**.
+Triggers:
 
-The toggle is off by default, and the keyboard interface is only enumerated while it (or wake) is enabled. 
-> If the Game Bar overlay opens but does not respond to controller inputs, Windows may be missing the modern input stack. Installing or updating **Microsoft GameInput** will resolve this and restore controller navigation. You can install the service directly by opening an elevated command prompt and running `winget install Microsoft.GameInput`, or read the [official documentation](https://learn.microsoft.com/en-us/gaming/gdk/docs/features/common/input/overviews/input-overview) for more details.
->
-> You can also try the [Gaming Service Repair Tool](https://support.xbox.com/en-US/help/games-apps/troubleshooting/gaming-services-repair-tool). Thanks to @zhyu for the report #249.
+- `Button` — single tap
+- `Button*2` — double tap; two presses within 250 ms
+- `Button1+Button2` — fires when both buttons become held, and can fire again after either is released
+- `Button1+Button2*2` — requires the chord to be formed twice
+
+If a button has both single- and double-tap actions, the single-tap action is delayed
+until the 250 ms window closes. Otherwise, a single tap fires immediately.
+
+Use the bundled configuration tool to view or edit the slots:
+
+```sh
+python tools/config_tool.py shortcut
+python tools/config_tool.py shortcut 1=PS+Create:Win+PrintScreen
+python tools/config_tool.py shortcut 2=PS+UP:VolumeUp
+python tools/config_tool.py shortcut 3=PS+DOWN:VolumeDown
+python tools/config_tool.py shortcut 4=PS:Win+G
+python tools/config_tool.py shortcut 6=PS*2:Win+Tab
+python tools/config_tool.py shortcut 1=off
+```
+
+Multiple slot assignments can be passed in one command. Changes are saved to the Button
+sector by default; use `--no-save` for a RAM-only update.
+
+Actions:
+
+- **Keyboard** — modifiers plus one key, such as `Win+Shift+S`, `Win+PrintScreen`, `Win+G`, or `F13`. Raw HID usage IDs such as `0x16` are also accepted.
+- **Media** — `VolumeUp`, `VolumeDown`, `Mute`, `PlayPause`, `Next`, `Prev`, `Stop`, `BrightnessUp`, or `BrightnessDown`. These use the Consumer Control HID interface and take no modifiers.
+- **Firmware** — `bt_disconnect` disconnects the currently connected controller.
+
+Set `enable_keyboard=1` and reconnect USB to enable keyboard and media actions. Firmware
+actions do not require the USB HID interfaces.
+
+Limitations:
+
+- Trigger buttons are **not swallowed**. They still reach the game, so a chord using **PS** may also open the Steam overlay or Game Bar. Prefer buttons without a global binding.
+- Two DPad directions cannot form a chord because the controller reports only one DPad direction at a time; the tool rejects such pairs.
+- Due to a Windows limitation, volume actions adjust the DualSense audio endpoint only; they cannot adjust the currently selected default audio device.
 
 ## Wake-on-PS (optional)
 
-Enabling the **Wake PC from sleep on PS button** toggle in the [web config](#configuration) makes the dongle present a
-second HID interface (a boot keyboard) and advertise USB remote wakeup. A controller button press while the host is
-suspended then injects an **F15** keypress, waking the PC from **S3 sleep**. F15 was chosen because it has no default
-Windows or app binding — a stray fire never inserts characters or triggers shortcuts. The toggle is off by default, and
-the keyboard interface is only enumerated while it (or the Xbox Game Bar shortcut) is enabled.
+Enabling the **Wake PC from sleep on PS button** toggle in the [web config](#configuration) makes the dongle present two
+extra HID interfaces (a boot keyboard and a consumer control) and advertise USB remote wakeup. A controller button press
+while the host is suspended then injects an **F15** keypress, waking the PC from **S3 sleep**. F15 was chosen because it
+has no default Windows or app binding — a stray fire never inserts characters or triggers shortcuts. The toggle is off by
+default, and those interfaces are only enumerated while wake or the explicit `enable_keyboard` setting is enabled.
 
 Scope: **S3 only.** Modern Standby (S0ix) is not supported. To check your machine, run `powercfg /a` — you need
 "Standby (S3)" listed under available sleep states.

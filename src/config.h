@@ -8,9 +8,13 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "button_remap.h"
+#include "button_shortcut.h"
+#include "usb_descriptors.h"
+
 constexpr uint16_t CONFIG_STORAGE_SIZE = 64;
 
-//    64 bytes    |    64 bytes
+//    64 bytes    |
 //     Config     |     Button
 
 struct __attribute__((packed)) Config_body {
@@ -25,7 +29,7 @@ struct __attribute__((packed)) Config_body {
     uint8_t audio_buffer_length; // [16,127]
     uint8_t controller_mode; // 0: DS5, 1: DSE, 2: Auto
     uint8_t enable_usb_sn; // 0: disable,1: enable
-    uint8_t ps_shortcut_enabled; // 0: disabled, 1: enabled (Xbox Game Bar via HID keyboard)
+    uint8_t enable_keyboard; // bool: expose the USB keyboard interface
     uint8_t mic_select; // 0: auto, 1: builtin, 2: headphone, 3: disable
     uint8_t speaker_select; // 0: auto, 1: builtin, 2: headphone, 3: disable
     uint8_t enable_wake; // bool: 0 disabled (default), 1 wake host on PS press (USB remote wakeup)
@@ -46,7 +50,8 @@ struct __attribute__((packed)) Config {
 };
 
 struct __attribute__((packed)) Button {
-    uint8_t button_remap[28]; // orig_btn:target_btn
+    uint8_t button_remap[BUTTON_REMAP_COUNT]; // orig_btn:target_btn
+    ButtonShortcut shortcuts[BUTTON_SHORTCUT_COUNT];
 };
 
 struct __attribute__((packed)) ConfigStorage {
@@ -55,7 +60,8 @@ struct __attribute__((packed)) ConfigStorage {
 };
 
 static_assert(offsetof(ConfigStorage, button) == CONFIG_STORAGE_SIZE);
-static_assert(sizeof(Button) <= 63); // 0xFA Feature Report payload
+static_assert(BUTTON_REMAP_COUNT <= BUTTON_REPORT_SIZE); // 0xFA payload
+static_assert(sizeof(Button::shortcuts) <= BUTTON_REPORT_SIZE); // 0xFB payload
 
 void config_default();
 void config_load();
@@ -63,9 +69,11 @@ bool config_save();
 Config_body& get_config();
 Button& get_button();
 void set_config(const uint8_t *new_config, const uint16_t len);
-void set_button(const uint8_t *new_button, uint16_t len);
+void set_button_remap(const uint8_t *new_remap, uint16_t len);
+void set_shortcut(const uint8_t *new_shortcuts, uint16_t len);
 void config_valid();
-void button_valid();
+void button_remap_valid();
+void shortcut_valid();
 void set_config(const Config_body &new_config);
 extern bool is_dse;
 

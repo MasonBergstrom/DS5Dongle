@@ -5,7 +5,8 @@ Read and modify the ds5dongle configuration over USB HID, without reflashing.
 Protocol (see src/cmd.cpp / src/config.h):
   GET feature report 0xF7 -> raw Config_body bytes
   GET feature report 0xF8 -> firmware version string
-  GET/SET feature report 0xFA -> Button settings area (currently 28 bytes)
+  GET/SET feature report 0xFA -> button remap table (28 bytes)
+  GET/SET feature report 0xFB -> shortcut slots (63 bytes)
   SET feature report 0xF6:
       funcid 0x01 + body   -> update config in RAM (firmware clamps invalid values)
       funcid 0x02          -> persist config to flash
@@ -22,6 +23,16 @@ Examples:
   python config_tool.py remap
   python config_tool.py remap square=cross l1=disable
   python config_tool.py remap square=nomap  # clear (restore identity mapping)
+  python config_tool.py remap --reset       # reset all button remaps
+  python config_tool.py shortcut
+  python config_tool.py shortcut 1=L1+R1:Ctrl+Shift+S
+  python config_tool.py shortcut 4=Home:F13
+  python config_tool.py shortcut 5=Home*2:F14
+  python config_tool.py shortcut 2=L3+R3:VolumeUp
+  python config_tool.py shortcut 3=Create+Options:bt_disconnect
+  python config_tool.py shortcut 6=Create+Options*2:bt_disconnect
+  python config_tool.py shortcut 9=Mute*2:Play
+  python config_tool.py shortcut 1=off
   python config_tool.py fields
 """
 import argparse
@@ -46,7 +57,8 @@ HID_USAGE_GAMEPAD = 0x05
 REPORT_SET = 0xF6        # SET_REPORT: write/save config
 REPORT_GET_CONFIG = 0xF7  # GET_REPORT: read Config_body
 REPORT_GET_VERSION = 0xF8  # GET_REPORT: firmware version string
-REPORT_BUTTON = 0xFA      # GET/SET_REPORT: Button settings area
+REPORT_REMAP = 0xFA       # GET/SET_REPORT: button remap table
+REPORT_SHORTCUT = 0xFB    # GET/SET_REPORT: shortcut slots
 
 FUNC_UPDATE = 0x01       # update config in RAM
 FUNC_SAVE = 0x02         # persist to flash
@@ -95,6 +107,78 @@ BUTTON_NAMES = (
     "Disable",
 )
 BUTTON_COUNT = len(BUTTON_NAMES)
+BUTTON_REMAP_COUNT = BUTTON_COUNT
+BUTTON_SOURCE_COUNT = BUTTON_COUNT - 1
+SHORTCUT_COUNT = 9        # src/config.h BUTTON_SHORTCUT_COUNT
+SHORTCUT_PAYLOAD_SIZE = 3
+SHORTCUT_SIZE = 3 + SHORTCUT_PAYLOAD_SIZE + 1  # triggers/action + payload + flags
+SHORTCUT_DISABLED = 0xFF
+TRIGGER_TAP = 0xFD        # src/config.h SHORTCUT_TRIGGER_TAP
+TRIGGER_DOUBLE_TAP = 0xFE # src/config.h SHORTCUT_TRIGGER_DOUBLE_TAP
+SHORTCUT_FLAG_DOUBLE_TAP = 0x01 # src/config.h SHORTCUT_FLAG_DOUBLE_TAP (chords only)
+SHORTCUT_FLAG_MASK = SHORTCUT_FLAG_DOUBLE_TAP
+SHORTCUT_ACTION_KEYBOARD = 0
+SHORTCUT_ACTION_BT_DISCONNECT = 1
+SHORTCUT_ACTION_CONSUMER = 2
+DPAD_MAX = 7               # DPadNorthWest; the hat reports one direction at a time
+KEY_USAGE_MAX = 0x73       # src/usb_descriptors.h SHORTCUT_KEY_USAGE_MAX
+CONSUMER_USAGE_MAX = 0x2FF # src/usb_descriptors.h SHORTCUT_CONSUMER_USAGE_MAX
+SHORTCUT_STORAGE_SIZE = SHORTCUT_COUNT * SHORTCUT_SIZE
+if SHORTCUT_STORAGE_SIZE > SET_DATA_LEN:
+    raise RuntimeError(
+        f"Shortcut slots need {SHORTCUT_STORAGE_SIZE} bytes, but report "
+        f"0x{REPORT_SHORTCUT:02X} carries {SET_DATA_LEN}."
+    )
+
+MODIFIER_NAMES = {
+    "ctrl": 0x01, "control": 0x01, "leftctrl": 0x01, "leftcontrol": 0x01,
+    "shift": 0x02, "leftshift": 0x02,
+    "alt": 0x04, "leftalt": 0x04,
+    "gui": 0x08, "win": 0x08, "windows": 0x08, "command": 0x08, "meta": 0x08,
+    "rightctrl": 0x10, "rightcontrol": 0x10,
+    "rightshift": 0x20,
+    "rightalt": 0x40,
+    "rightgui": 0x80, "rightwin": 0x80, "rightcommand": 0x80,
+}
+
+KEY_NAMES = {chr(ord("a") + i): 0x04 + i for i in range(26)}
+KEY_NAMES.update({str(i): 0x1D + i for i in range(1, 10)})
+KEY_NAMES["0"] = 0x27
+KEY_NAMES.update({f"f{i}": 0x39 + i for i in range(1, 13)})
+KEY_NAMES.update({f"f{i}": 0x5B + i for i in range(13, 25)})
+KEY_NAMES.update({
+    "enter": 0x28, "return": 0x28, "esc": 0x29, "escape": 0x29,
+    "backspace": 0x2A, "tab": 0x2B, "space": 0x2C,
+    "minus": 0x2D, "equal": 0x2E, "leftbracket": 0x2F, "rightbracket": 0x30,
+    "backslash": 0x31, "semicolon": 0x33, "apostrophe": 0x34, "grave": 0x35,
+    "comma": 0x36, "period": 0x37, "slash": 0x38, "capslock": 0x39,
+    "printscreen": 0x46, "prtscn": 0x46, "prtsc": 0x46, "scrolllock": 0x47, "pause": 0x48,
+    "insert": 0x49, "home": 0x4A, "pageup": 0x4B, "delete": 0x4C,
+    "end": 0x4D, "pagedown": 0x4E, "right": 0x4F, "left": 0x50,
+    "down": 0x51, "up": 0x52, "numlock": 0x53, "menu": 0x65,
+})
+# Aliases follow their canonical name in KEY_NAMES, so keep the first name seen
+# for each usage id -- otherwise "VolumeUp" would echo back as "Volup".
+KEY_ID_TO_NAME = {}
+for _name, _value in KEY_NAMES.items():
+    KEY_ID_TO_NAME.setdefault(_value, _name.upper() if len(_name) == 1 else _name.title())
+
+# Consumer page (0x0C) usages. Volume/mute/transport keys have Keyboard-page
+# equivalents (0x7F..0x81) that Windows silently ignores, so they are a separate
+# action delivered on the consumer HID interface.
+CONSUMER_NAMES = {
+    "mute": 0x00E2,
+    "volumeup": 0x00E9, "volup": 0x00E9,
+    "volumedown": 0x00EA, "voldown": 0x00EA,
+    "playpause": 0x00CD, "play": 0x00CD,
+    "nexttrack": 0x00B5, "next": 0x00B5,
+    "prevtrack": 0x00B6, "previoustrack": 0x00B6, "prev": 0x00B6,
+    "stop": 0x00B7,
+    "brightnessup": 0x006F, "brightnessdown": 0x0070,
+}
+CONSUMER_ID_TO_NAME = {}
+for _name, _value in CONSUMER_NAMES.items():
+    CONSUMER_ID_TO_NAME.setdefault(_value, _name.title())
 
 
 def normalize_button_name(name):
@@ -154,7 +238,7 @@ FIELDS = [
     ("audio_buffer_length","u8",    lambda v: 16 <= v <= 128,    "[16, 128]"),
     ("controller_mode",    "u8",    lambda v: v in (0, 1, 2),    "0:DS5 1:DSE 2:Auto"),
     ("enable_usb_sn",      "u8",    lambda v: v in (0, 1),       "0/1 (USB serial number)"),
-    ("ps_shortcut_enabled","u8",    lambda v: v in (0, 1),       "0/1 (Xbox Game Bar via HID keyboard)"),
+    ("enable_keyboard",    "u8",    lambda v: v in (0, 1),       "0/1 (USB keyboard interface)"),
     ("mic_select",         "u8",    lambda v: v in (0, 1, 2, 3), "0:auto 1:builtin 2:headphone 3:disable"),
     ("speaker_select",     "u8",    lambda v: v in (0, 1, 2, 3), "0:auto 1:builtin 2:headphone 3:disable"),
     ("enable_wake",        "u8",    lambda v: v in (0, 1),       "0/1 (wake host on PS press)"),
@@ -254,17 +338,26 @@ def read_version(dev):
     return raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
 
 
-def read_button(dev):
+def read_area(dev, report_id, size, what):
     try:
-        data = dev.get_feature_report(REPORT_BUTTON, BUTTON_COUNT + 1)
+        data = dev.get_feature_report(report_id, FEATURE_REPORT_LEN)
     except OSError as exc:
-        sys.exit(f"Failed reading Button report 0x{REPORT_BUTTON:02X}: {exc}")
+        sys.exit(f"Failed reading {what} (report 0x{report_id:02X}): {exc}")
     if not data:
-        sys.exit("Empty response reading Button settings (report 0xFA). Is the firmware current?")
-    raw = bytes(data[1:]) if data[0] == REPORT_BUTTON else bytes(data)
-    if len(raw) < BUTTON_COUNT:
-        sys.exit(f"Short Button settings read: got {len(raw)} bytes, expected {BUTTON_COUNT}.")
-    return bytearray(raw[:BUTTON_COUNT])
+        sys.exit(f"Empty response reading {what} (report 0x{report_id:02X}). "
+                 "Is the firmware current?")
+    raw = bytes(data[1:]) if data[0] == report_id else bytes(data)
+    if len(raw) < size:
+        sys.exit(f"Short {what} read: got {len(raw)} bytes, expected {size}.")
+    return bytearray(raw[:size])
+
+
+def read_remap(dev):
+    return read_area(dev, REPORT_REMAP, BUTTON_REMAP_COUNT, "button remaps")
+
+
+def read_shortcuts(dev):
+    return read_area(dev, REPORT_SHORTCUT, SHORTCUT_STORAGE_SIZE, "shortcut slots")
 
 def send_feature_report(dev, data, operation, report_id=REPORT_SET):
     report = bytes([report_id]) + data
@@ -299,16 +392,27 @@ def write_config(dev, cfg, save):
     return new_cfg
 
 
-def write_button(dev, button, save):
+def write_remap(dev, remap, save):
     send_feature_report(
-        dev, bytes(button), "updating Button settings", report_id=REPORT_BUTTON
+        dev, bytes(remap), "updating button remaps", report_id=REPORT_REMAP
     )
-    new_button = read_button(dev)
-    if save:
-        save_data = bytes([FUNC_SAVE]).ljust(SET_DATA_LEN, b"\x00")
-        send_feature_report(dev, save_data, "saving Button settings to flash")
-        new_button = read_button(dev)
-    return new_button
+    save_button_sector(dev, save)
+    return read_remap(dev)
+
+
+def write_shortcuts(dev, shortcuts, save):
+    send_feature_report(
+        dev, bytes(shortcuts), "updating shortcut slots", report_id=REPORT_SHORTCUT
+    )
+    save_button_sector(dev, save)
+    return read_shortcuts(dev)
+
+
+def save_button_sector(dev, save):
+    if not save:
+        return
+    save_data = bytes([FUNC_SAVE]).ljust(SET_DATA_LEN, b"\x00")
+    send_feature_report(dev, save_data, "saving Button settings to flash")
 
 
 def fmt_value(name, value):
@@ -357,7 +461,8 @@ def cmd_get(_args):
     try:
         version = read_version(dev)
         cfg = read_config(dev)
-        remap = read_button(dev)
+        remap = read_remap(dev)
+        shortcuts = read_shortcuts(dev)
     finally:
         dev.close()
     if version:
@@ -366,6 +471,8 @@ def cmd_get(_args):
     print_config(cfg)
     print("Button remaps:")
     print_remaps(remap)
+    print("Shortcut slots:")
+    print_shortcuts(shortcuts)
 
 
 def cmd_set(args):
@@ -418,25 +525,40 @@ def parse_remap_assignment(token):
 
 
 def print_remaps(remap, indent="  "):
-    for source in range(BUTTON_COUNT - 1):
+    for source in range(BUTTON_SOURCE_COUNT):
         target = remap[source]
         print(f"{indent}{BUTTON_NAMES[source]:<15} -> {button_name(target)}")
 
 
 def cmd_remap(args):
+    if args.reset and args.assignments:
+        sys.exit("--reset cannot be combined with source=target assignments.")
+
     updates = dict(parse_remap_assignment(token) for token in args.assignments)
     dev = open_device()
     try:
-        remap = read_button(dev)
-        if not updates:
+        remap = read_remap(dev)
+        if not updates and not args.reset:
             print("Button remaps:")
             print_remaps(remap)
             return
-        for source, target in updates.items():
-            remap[source] = target
-        new_remap = write_button(dev, remap, save=not args.no_save)
+        if args.reset:
+            remap[:BUTTON_REMAP_COUNT] = range(BUTTON_REMAP_COUNT)
+        else:
+            for source, target in updates.items():
+                remap[source] = target
+        new_remap = write_remap(dev, remap, save=not args.no_save)
     finally:
         dev.close()
+
+    if args.reset:
+        expected = bytes(range(BUTTON_REMAP_COUNT))
+        if new_remap[:BUTTON_REMAP_COUNT] != expected:
+            sys.exit("Read-back verification failed while resetting button remaps.")
+        print("Reset all button remaps to their defaults:" +
+              ("" if args.no_save else " (saved to flash)"))
+        print_remaps(new_remap)
+        return
 
     for source in updates:
         target = new_remap[source]
@@ -450,6 +572,212 @@ def cmd_remap(args):
     for source in updates:
         target = new_remap[source]
         print(f"  {BUTTON_NAMES[source]:<15} -> {button_name(target)}")
+
+
+def shortcut_offset(slot):
+    return slot * SHORTCUT_SIZE
+
+
+def unpack_shortcut(button, slot):
+    offset = shortcut_offset(slot)
+    return (button[offset], button[offset + 1], button[offset + 2],
+            list(button[offset + 3:offset + 3 + SHORTCUT_PAYLOAD_SIZE]),
+            button[offset + SHORTCUT_SIZE - 1])
+
+
+def pack_shortcut(button, slot, shortcut):
+    trigger_a, trigger_b, action, payload, flags = shortcut
+    offset = shortcut_offset(slot)
+    button[offset:offset + SHORTCUT_SIZE] = bytes(
+        [trigger_a, trigger_b, action] + payload[:SHORTCUT_PAYLOAD_SIZE] + [flags]
+    )
+
+
+def disabled_shortcut():
+    return (SHORTCUT_DISABLED, SHORTCUT_DISABLED,
+            SHORTCUT_ACTION_KEYBOARD, [0] * SHORTCUT_PAYLOAD_SIZE, 0)
+
+
+def key_name(key_id):
+    return KEY_ID_TO_NAME.get(key_id, f"0x{key_id:02X}")
+
+
+def consumer_name(usage):
+    return CONSUMER_ID_TO_NAME.get(usage, f"consumer 0x{usage:04X}")
+
+
+def format_keyboard_chord(modifiers, keys):
+    modifier_order = (
+        (0x01, "Ctrl"), (0x02, "Shift"), (0x04, "Alt"), (0x08, "Win"),
+        (0x10, "RightCtrl"), (0x20, "RightShift"),
+        (0x40, "RightAlt"), (0x80, "RightWin"),
+    )
+    parts = [name for bit, name in modifier_order if modifiers & bit]
+    parts.extend(key_name(key) for key in keys if key)
+    return "+".join(parts) if parts else "(empty)"
+
+
+def shortcut_slot_valid(shortcut):
+    """Mirror of shortcut_slot_valid() in src/config.cpp."""
+    trigger_a, trigger_b, action, payload, flags = shortcut
+    if trigger_a >= BUTTON_SOURCE_COUNT:
+        return False
+    if flags & ~SHORTCUT_FLAG_MASK:
+        return False
+    if trigger_b in (TRIGGER_TAP, TRIGGER_DOUBLE_TAP):
+        if flags & SHORTCUT_FLAG_DOUBLE_TAP:
+            return False
+    else:
+        if trigger_b >= BUTTON_SOURCE_COUNT or trigger_a == trigger_b:
+            return False
+        if trigger_a <= DPAD_MAX and trigger_b <= DPAD_MAX:
+            return False
+    if action == SHORTCUT_ACTION_KEYBOARD:
+        return payload[1] <= KEY_USAGE_MAX and (payload[0] != 0 or payload[1] != 0)
+    if action == SHORTCUT_ACTION_CONSUMER:
+        usage = payload[0] | (payload[1] << 8)
+        return 0 < usage <= CONSUMER_USAGE_MAX
+    return action == SHORTCUT_ACTION_BT_DISCONNECT
+
+
+def print_shortcuts(button, indent="  "):
+    for slot in range(SHORTCUT_COUNT):
+        shortcut = unpack_shortcut(button, slot)
+        if not shortcut_slot_valid(shortcut):
+            print(f"{indent}{slot + 1}: off")
+            continue
+        trigger_a, trigger_b, action, payload, flags = shortcut
+        if trigger_b == TRIGGER_TAP:
+            triggers = button_name(trigger_a)
+        elif trigger_b == TRIGGER_DOUBLE_TAP:
+            triggers = f"{button_name(trigger_a)}*2"
+        else:
+            triggers = f"{button_name(trigger_a)}+{button_name(trigger_b)}"
+            if flags & SHORTCUT_FLAG_DOUBLE_TAP:
+                triggers += "*2"
+        if action == SHORTCUT_ACTION_BT_DISCONNECT:
+            output = "bt_disconnect"
+        elif action == SHORTCUT_ACTION_CONSUMER:
+            output = consumer_name(payload[0] | (payload[1] << 8))
+        else:
+            output = format_keyboard_chord(payload[0], payload[1:2])
+        print(f"{indent}{slot + 1}: {triggers} -> {output}")
+
+
+def parse_key(raw):
+    normalized = normalize_button_name(raw)
+    if normalized in KEY_NAMES:
+        return KEY_NAMES[normalized]
+    try:
+        value = int(raw, 0)
+    except ValueError:
+        sys.exit(f"Unknown keyboard key '{raw}'. Use a key name or HID usage ID (for example 0x16).")
+    if not 0x04 <= value <= KEY_USAGE_MAX:
+        sys.exit(f"Keyboard HID usage '{raw}' is outside 0x04..0x{KEY_USAGE_MAX:02X}.")
+    return value
+
+
+def parse_shortcut_assignment(token):
+    if "=" not in token:
+        sys.exit(f"Bad shortcut '{token}', expected slot=Button[+Button][*2]:output.")
+    slot_raw, definition = token.split("=", 1)
+    try:
+        slot = int(slot_raw, 10) - 1
+    except ValueError:
+        sys.exit(f"Bad shortcut slot '{slot_raw}', expected 1..{SHORTCUT_COUNT}.")
+    if not 0 <= slot < SHORTCUT_COUNT:
+        sys.exit(f"Shortcut slot must be in 1..{SHORTCUT_COUNT}.")
+    if definition.strip().lower() in ("off", "disable", "none"):
+        return slot, disabled_shortcut()
+    if ":" not in definition:
+        sys.exit(f"Bad shortcut '{token}', missing ':' between controller trigger and output.")
+    trigger_raw, output_raw = definition.split(":", 1)
+    triggers = [part.strip() for part in trigger_raw.split("+") if part.strip()]
+    flags = 0
+    if len(triggers) == 1:
+        # A lone button is a tap trigger; a trailing "*2" asks for a double tap.
+        name = triggers[0]
+        taps = 1
+        if "*" in name:
+            name, _, taps_raw = name.partition("*")
+            taps_raw = taps_raw.strip()
+            if taps_raw not in ("1", "2"):
+                sys.exit("A tap trigger supports '*1' (single) or '*2' (double) only.")
+            taps = int(taps_raw)
+        trigger_ids = [parse_button(name.strip(), source=True),
+                       TRIGGER_TAP if taps == 1 else TRIGGER_DOUBLE_TAP]
+    elif len(triggers) == 2:
+        # A trailing "*2" on the second button asks for a double-tapped chord.
+        if "*" in triggers[0]:
+            sys.exit("Put the '*2' at the end of the chord, for example 'Create+Options*2'.")
+        if "*" in triggers[1]:
+            name, _, taps_raw = triggers[1].partition("*")
+            if taps_raw.strip() not in ("1", "2"):
+                sys.exit("A chord supports '*1' (hold) or '*2' (double tap) only.")
+            if taps_raw.strip() == "2":
+                flags |= SHORTCUT_FLAG_DOUBLE_TAP
+            triggers[1] = name.strip()
+        trigger_ids = [parse_button(part, source=True) for part in triggers]
+        if trigger_ids[0] == trigger_ids[1]:
+            sys.exit("The two controller buttons in a shortcut must be different.")
+        if trigger_ids[0] <= DPAD_MAX and trigger_ids[1] <= DPAD_MAX:
+            sys.exit("A shortcut cannot use two DPad directions: the DPad reports a single "
+                     "direction at a time, so the chord could never fire.")
+    else:
+        sys.exit("A shortcut needs one button (tap trigger) or two buttons (chord).")
+
+    action_name = normalize_button_name(output_raw)
+    if action_name in ("btdisconnect", "disconnect"):
+        return slot, (trigger_ids[0], trigger_ids[1],
+                      SHORTCUT_ACTION_BT_DISCONNECT, [0] * SHORTCUT_PAYLOAD_SIZE, flags)
+    if action_name in CONSUMER_NAMES:
+        # Consumer usages are standalone; the HID consumer report carries no modifiers.
+        usage = CONSUMER_NAMES[action_name]
+        return slot, (trigger_ids[0], trigger_ids[1], SHORTCUT_ACTION_CONSUMER,
+                      [usage & 0xFF, usage >> 8, 0], flags)
+
+    modifiers = 0
+    keys = []
+    for part in (part.strip() for part in output_raw.split("+") if part.strip()):
+        normalized = normalize_button_name(part)
+        if normalized in MODIFIER_NAMES:
+            modifiers |= MODIFIER_NAMES[normalized]
+        else:
+            keys.append(parse_key(part))
+    if len(keys) > 1:
+        sys.exit("A keyboard shortcut supports at most one non-modifier key.")
+    if not modifiers and not keys:
+        sys.exit("The keyboard chord cannot be empty.")
+    key = keys[0] if keys else 0
+    return slot, (trigger_ids[0], trigger_ids[1], SHORTCUT_ACTION_KEYBOARD,
+                  [modifiers, key, 0], flags)
+
+
+def cmd_shortcut(args):
+    if args.reset and args.assignments:
+        sys.exit("--reset cannot be combined with shortcut assignments.")
+    if args.reset:
+        updates = {slot: disabled_shortcut() for slot in range(SHORTCUT_COUNT)}
+    else:
+        updates = dict(parse_shortcut_assignment(token) for token in args.assignments)
+    dev = open_device()
+    try:
+        shortcuts = read_shortcuts(dev)
+        if not updates:
+            print("Shortcut slots:")
+            print_shortcuts(shortcuts)
+            return
+        for slot, shortcut in updates.items():
+            pack_shortcut(shortcuts, slot, shortcut)
+        new_shortcuts = write_shortcuts(dev, shortcuts, save=not args.no_save)
+        for slot, shortcut in updates.items():
+            if unpack_shortcut(new_shortcuts, slot) != shortcut:
+                sys.exit(f"Read-back verification failed for shortcut slot {slot + 1}.")
+    finally:
+        dev.close()
+
+    print("Updated shortcuts:" + ("" if args.no_save else " (saved to Button Sector)"))
+    print_shortcuts(new_shortcuts)
 
 
 def main():
@@ -470,9 +798,33 @@ def main():
         help="view or set button remaps (source=target; nomap restores identity, disable blocks)",
     )
     p_remap.add_argument("assignments", nargs="*", metavar="source=target")
+    p_remap.add_argument("--reset", action="store_true",
+                         help="reset all button remaps to their identity defaults")
     p_remap.add_argument("--no-save", action="store_true",
                          help="update RAM only; do not persist to flash")
     p_remap.set_defaults(func=cmd_remap)
+
+    p_shortcut = sub.add_parser(
+        "shortcut",
+        help="view or set up to 9 controller chord/tap action slots",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  python tools/config_tool.py shortcut
+  python tools/config_tool.py shortcut 1=PS+Create:Win+PrintScreen
+  python tools/config_tool.py shortcut 2=PS+UP:VolumeUp
+  python tools/config_tool.py shortcut 3=PS+DOWN:VolumeDown
+  python tools/config_tool.py shortcut 4=PS:Win+G
+  python tools/config_tool.py shortcut 6=PS*2:Win+Tab
+  python tools/config_tool.py shortcut 1=off""",
+    )
+    p_shortcut.add_argument(
+        "assignments", nargs="*", metavar="slot=Button[+Button|*2]:output",
+    )
+    p_shortcut.add_argument("--no-save", action="store_true",
+                            help="update RAM only; do not persist to flash")
+    p_shortcut.add_argument("--reset", action="store_true",
+                            help="turn off all shortcut mappings")
+    p_shortcut.set_defaults(func=cmd_shortcut)
 
     args = parser.parse_args()
     args.func(args)

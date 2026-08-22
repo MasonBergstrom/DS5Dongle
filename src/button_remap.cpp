@@ -5,41 +5,9 @@
 #include <cstdint>
 
 #include "button_remap.h"
+#include "button_utils.h"
 #include "config.h"
 #include "utils.h"
-
-static uint8_t get_state_value(const USBGetStateData &state_data, int index) {
-    switch (index) {
-        case DPadNorth: return state_data.DPad == North;
-        case DPadNorthEast: return state_data.DPad == NorthEast;
-        case DPadEast: return state_data.DPad == East;
-        case DPadSouthEast: return state_data.DPad == SouthEast;
-        case DPadSouth: return state_data.DPad == South;
-        case DPadSouthWest: return state_data.DPad == SouthWest;
-        case DPadWest: return state_data.DPad == West;
-        case DPadNorthWest: return state_data.DPad == NorthWest;
-        case ButtonSquare: return state_data.ButtonSquare;
-        case ButtonCross: return state_data.ButtonCross;
-        case ButtonCircle: return state_data.ButtonCircle;
-        case ButtonTriangle: return state_data.ButtonTriangle;
-        case ButtonL1: return state_data.ButtonL1;
-        case ButtonR1: return state_data.ButtonR1;
-        case ButtonL2: return state_data.ButtonL2;
-        case ButtonR2: return state_data.ButtonR2;
-        case ButtonCreate: return state_data.ButtonCreate;
-        case ButtonOptions: return state_data.ButtonOptions;
-        case ButtonL3: return state_data.ButtonL3;
-        case ButtonR3: return state_data.ButtonR3;
-        case ButtonHome: return state_data.ButtonHome;
-        case ButtonPad: return state_data.ButtonPad;
-        case ButtonMute: return state_data.ButtonMute;
-        case ButtonLeftFunction: return state_data.ButtonLeftFunction;
-        case ButtonRightFunction: return state_data.ButtonRightFunction;
-        case ButtonLeftPaddle: return state_data.ButtonLeftPaddle;
-        case ButtonRightPaddle: return state_data.ButtonRightPaddle;
-        default: return 0;
-    }
-}
 
 static Direction get_dpad_direction(int index) {
     switch (index) {
@@ -116,6 +84,7 @@ void button_remap_apply(USBGetStateData &state_data) {
         if (remap_table[i] == i || remap_table[i] == Disable) {
             continue;
         }
+        const bool pressed = button_is_pressed(state_copy, i);
 
         switch (remap_table[i]) {
             // DPad
@@ -127,31 +96,31 @@ void button_remap_apply(USBGetStateData &state_data) {
             case DPadSouthWest:
             case DPadWest:
             case DPadNorthWest: {
-                if (get_state_value(state_copy, i)) {
+                if (pressed) {
                     state_data.DPad = get_dpad_direction(remap_table[i]);
                 }
                 break;
             }
             // Button
-            case ButtonSquare: state_data.ButtonSquare |= get_state_value(state_copy, i); break;
-            case ButtonCross: state_data.ButtonCross |= get_state_value(state_copy, i); break;
-            case ButtonCircle: state_data.ButtonCircle |= get_state_value(state_copy, i); break;
-            case ButtonTriangle: state_data.ButtonTriangle |= get_state_value(state_copy, i); break;
-            case ButtonL1: state_data.ButtonL1 |= get_state_value(state_copy, i); break;
-            case ButtonR1: state_data.ButtonR1 |= get_state_value(state_copy, i); break;
-            case ButtonL2: state_data.ButtonL2 |= get_state_value(state_copy, i); break;
-            case ButtonR2: state_data.ButtonR2 |= get_state_value(state_copy, i); break;
-            case ButtonCreate: state_data.ButtonCreate |= get_state_value(state_copy, i); break;
-            case ButtonOptions: state_data.ButtonOptions |= get_state_value(state_copy, i); break;
-            case ButtonL3: state_data.ButtonL3 |= get_state_value(state_copy, i); break;
-            case ButtonR3: state_data.ButtonR3 |= get_state_value(state_copy, i); break;
-            case ButtonHome: state_data.ButtonHome |= get_state_value(state_copy, i); break;
-            case ButtonPad: state_data.ButtonPad |= get_state_value(state_copy, i); break;
-            case ButtonMute: state_data.ButtonMute |= get_state_value(state_copy, i); break;
-            case ButtonLeftFunction: state_data.ButtonLeftFunction |= get_state_value(state_copy, i); break;
-            case ButtonRightFunction: state_data.ButtonRightFunction |= get_state_value(state_copy, i); break;
-            case ButtonLeftPaddle: state_data.ButtonLeftPaddle |= get_state_value(state_copy, i); break;
-            case ButtonRightPaddle: state_data.ButtonRightPaddle |= get_state_value(state_copy, i); break;
+            case ButtonSquare: state_data.ButtonSquare |= pressed; break;
+            case ButtonCross: state_data.ButtonCross |= pressed; break;
+            case ButtonCircle: state_data.ButtonCircle |= pressed; break;
+            case ButtonTriangle: state_data.ButtonTriangle |= pressed; break;
+            case ButtonL1: state_data.ButtonL1 |= pressed; break;
+            case ButtonR1: state_data.ButtonR1 |= pressed; break;
+            case ButtonL2: state_data.ButtonL2 |= pressed; break;
+            case ButtonR2: state_data.ButtonR2 |= pressed; break;
+            case ButtonCreate: state_data.ButtonCreate |= pressed; break;
+            case ButtonOptions: state_data.ButtonOptions |= pressed; break;
+            case ButtonL3: state_data.ButtonL3 |= pressed; break;
+            case ButtonR3: state_data.ButtonR3 |= pressed; break;
+            case ButtonHome: state_data.ButtonHome |= pressed; break;
+            case ButtonPad: state_data.ButtonPad |= pressed; break;
+            case ButtonMute: state_data.ButtonMute |= pressed; break;
+            case ButtonLeftFunction: state_data.ButtonLeftFunction |= pressed; break;
+            case ButtonRightFunction: state_data.ButtonRightFunction |= pressed; break;
+            case ButtonLeftPaddle: state_data.ButtonLeftPaddle |= pressed; break;
+            case ButtonRightPaddle: state_data.ButtonRightPaddle |= pressed; break;
             default: {
                 break;
             }
