@@ -489,6 +489,9 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
         case 2:
             bInterval = 0x01;
             break;
+        case 3:
+            bInterval = 0x01;
+            break;
     }
     constexpr auto offset = CONFIG_DESC_LEN_BASE;
     descriptor_configuration[offset - 1] = bInterval;

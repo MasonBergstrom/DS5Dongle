@@ -43,7 +43,7 @@ void __not_in_flash_func(interrupt_loop)() {
     if (!tud_hid_ready()) return;
 
     // TODO: Refactor for better code reuse
-    if (get_config().polling_rate_mode != 2) {
+    if (get_config().polling_rate_mode < 2) {
         USBGetStateData report = interrupt_in_data;
         button_remap_apply(report);
         if (!tud_hid_report(0x01, &report, sizeof(report))) {
@@ -52,10 +52,14 @@ void __not_in_flash_func(interrupt_loop)() {
         return;
     }
 
+    // Real-time sends only fresh BT frames. 1000 Hz smoothed fills every 1 ms
+    // USB slot with the latest frame, repeating it when Bluetooth has not
+    // delivered a newer one. This preserves an even cadence for gyro users.
+    const bool smoothed = get_config().polling_rate_mode == 3;
     bool should_send = false;
     USBGetStateData report{};
 
-    if (report_dirty) {
+    if (smoothed || report_dirty) {
         report = interrupt_in_data;
         report_dirty = false;
         should_send = true;
@@ -115,7 +119,7 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
         memcpy(&interrupt_in_data, data + 3, sizeof(interrupt_in_data));
         button_shortcut_tick(interrupt_in_data);
 
-        if (get_config().polling_rate_mode != 2) {
+        if (get_config().polling_rate_mode < 2) {
 #if ENABLE_BATT_LED
             battery_led_note_report();
 #endif

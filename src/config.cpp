@@ -96,7 +96,7 @@ void config_valid() {
         body->disable_pico_led = 0;
         printf("[Config] disable_pico_led is invalid\n");
     }
-    if (body->polling_rate_mode > 2) {
+    if (body->polling_rate_mode > 3) {
         body->polling_rate_mode = 1;
         printf("[Config] polling_rate_mode is invalid\n");
     }
