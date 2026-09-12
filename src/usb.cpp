@@ -9,6 +9,9 @@
 #include "bsp/board_api.h"
 #include "config.h"
 #include "utils.h"
+#include "usb.h"
+#include "debug.h"
+#include "pico/time.h"
 
 uint8_t mute[2] = {}; // 0: SPEAKER(0x02) 1: MIC(0x05)
 float volume[2] = {0.0f,48.0f}; // 0: SPEAKER(0x02) 1: MIC(0x05)
@@ -209,9 +212,23 @@ bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p
     return audio10_set_req_entity(p_request, buf);
 }
 
+static volatile uint32_t hid_poll_period_us = 0;
+
+void usb_note_enumerated_binterval(uint8_t binterval) {
+    hid_poll_period_us = binterval ? static_cast<uint32_t>(binterval) * 1000u : 0u;
+}
+
+uint32_t usb_hid_poll_period_us() {
+    return hid_poll_period_us;
+}
+
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_t len) {
-    (void) instance;
+    (void) report;
     (void) len;
+    if (instance != 0) return;
+#if ENABLE_DEBUG
+    debug_usb_report_delivered(time_us_64());
+#endif
 }
 
 #ifndef ENABLE_WAKE_HID

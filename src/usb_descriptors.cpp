@@ -26,6 +26,7 @@
 #include "bsp/board_api.h"
 #include "tusb.h"
 #include "config.h"
+#include "usb.h"
 #include "usb_descriptors.h"
 
 #ifndef ENABLE_SERIAL
@@ -496,6 +497,7 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     constexpr auto offset = CONFIG_DESC_LEN_BASE;
     descriptor_configuration[offset - 1] = bInterval;
     descriptor_configuration[offset - 8] = bInterval;
+    usb_note_enumerated_binterval(static_cast<uint8_t>(bInterval));
     if (ds_mode()) {
         descriptor_configuration[offset - 16] = 0x51;
     }else {

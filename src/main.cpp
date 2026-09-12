@@ -46,9 +46,13 @@ void __not_in_flash_func(interrupt_loop)() {
     if (get_config().polling_rate_mode < 2) {
         USBGetStateData report = interrupt_in_data;
         button_remap_apply(report);
-        if (!tud_hid_report(0x01, &report, sizeof(report))) {
+        const bool sent = tud_hid_report(0x01, &report, sizeof(report));
+        if (!sent) {
             printf("[USBHID] tud_hid_report error\n");
         }
+    #if ENABLE_DEBUG
+        if (sent) debug_usb_report_sent();
+    #endif
         return;
     }
 
@@ -75,6 +79,11 @@ void __not_in_flash_func(interrupt_loop)() {
             // so we try again on the next loop iteration.
             report_dirty = true;
         }
+#if ENABLE_DEBUG
+        else {
+            debug_usb_report_sent();
+        }
+#endif
     }
 }
 
@@ -89,6 +98,10 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
             }
             return;
         }
+#if ENABLE_DEBUG
+        debug_bt_report_arrival();
+        debug_note_bt_frame_staged(data + 3, len - 3);
+#endif
         if ((data[56] & 1) != interrupt_in_data.PluggedHeadphones) {
             set_headset(data[56] & 1);
         }
