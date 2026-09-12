@@ -27,6 +27,7 @@
 #include "tusb.h"
 #include "config.h"
 #include "usb_descriptors.h"
+#include "usb.h"
 
 #ifndef ENABLE_SERIAL
 #define ENABLE_SERIAL 0
@@ -127,11 +128,24 @@ tusb_desc_device_t desc_device =
 // Invoked when received GET DEVICE DESCRIPTOR
 // Application return pointer to descriptor
 uint8_t const *tud_descriptor_device_cb(void) {
-    desc_device.idProduct = ds_mode() ? 0x0CE6 : 0x0DF2;
-    desc_device.iSerialNumber = get_config().enable_usb_sn ? 0x03 : 0x00;
+    const bool idle = usb_idle_descriptor_requested();
+    usb_identity_note_descriptor_served(idle);
+    if (idle) {
+        // A distinct non-Sony identity prevents controller software from
+        // claiming the wake-only device. The configuration has no gamepad.
+        desc_device.idVendor = 0x2E8A;
+        desc_device.idProduct = 0x0DE0;
+        desc_device.iSerialNumber = 0x03;
+    } else {
+        desc_device.idVendor = 0x054C;
+        desc_device.idProduct = ds_mode() ? 0x0CE6 : 0x0DF2;
+        desc_device.iSerialNumber = get_config().enable_usb_sn ? 0x03 : 0x00;
+    }
     // USB 2.1 (so the host requests the BOS / MS OS 2.0 selective-suspend opt-in)
     // only when wake is enabled; plain USB 2.0 otherwise.
-    desc_device.bcdUSB = get_config().enable_wake ? 0x0210 : 0x0200;
+    // The idle HID-only identity needs no audio selective-suspend policy, so
+    // plain USB 2.0 avoids advertising a BOS descriptor that targets audio.
+    desc_device.bcdUSB = !idle && get_config().enable_wake ? 0x0210 : 0x0200;
     return reinterpret_cast<uint8_t const *>(&desc_device);
 }
 
@@ -473,11 +487,37 @@ uint8_t descriptor_configuration[] = {
 #endif
 };
 
+#ifdef ENABLE_WAKE_HID
+// Wake-only identity. The inert vendor HID deliberately occupies TinyUSB HID
+// instance 0 so the keyboard remains instance 1, exactly as it is in the full
+// DualSense configuration. This avoids dynamic instance routing during
+// detach/reattach transitions while exposing no gamepad usage collection.
+static constexpr uint16_t IDLE_CONFIG_LEN = 9 + 25 + 25;
+uint8_t const descriptor_configuration_idle[] = {
+    // Configuration: two HID interfaces, self-powered + remote wake.
+    0x09, 0x02, U16_TO_U8S_LE(IDLE_CONFIG_LEN), 0x02, 0x01, 0x00, 0xE0, 0x32,
+
+    // Interface 0: inert vendor-defined HID placeholder, IN EP4.
+    0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x15, 0x00,
+    0x07, 0x05, 0x84, 0x03, 0x01, 0x00, 0x0A,
+
+    // Interface 1: wake boot keyboard, IN EP7.
+    0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00,
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x2D, 0x00,
+    0x07, 0x05, 0x87, 0x03, 0x08, 0x00, 0x0A,
+};
+static_assert(sizeof(descriptor_configuration_idle) == IDLE_CONFIG_LEN);
+#endif
+
 // Invoked when received GET CONFIGURATION DESCRIPTOR
 // Application return pointer to descriptor
 // Descriptor contents must exist long enough for transfer to complete
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void) index; // for multiple configurations
+#ifdef ENABLE_WAKE_HID
+    if (usb_idle_descriptor_requested()) return descriptor_configuration_idle;
+#endif
     auto bInterval = 0x01;
     switch (get_config().polling_rate_mode) {
         case 0:
@@ -921,6 +961,22 @@ uint8_t const desc_hid_report_dse[] = {
 static_assert(sizeof(desc_hid_report_dse) == 453);
 
 #ifdef ENABLE_WAKE_HID
+// Inert placeholder for idle HID instance 0. Its vendor-defined usage creates
+// no game-controller node; the one-byte input report is never transmitted.
+uint8_t const desc_hid_report_idle[] = {
+    0x06, 0x00, 0xFF, // Usage Page (Vendor Defined 0xFF00)
+    0x09, 0x01,       // Usage (1)
+    0xA1, 0x01,       // Collection (Application)
+    0x15, 0x00,       // Logical Minimum (0)
+    0x26, 0xFF, 0x00, // Logical Maximum (255)
+    0x75, 0x08,       // Report Size (8)
+    0x95, 0x01,       // Report Count (1)
+    0x09, 0x02,       // Usage (2) for the input field
+    0x81, 0x02,       // Input (Data,Var,Abs)
+    0xC0              // End Collection
+};
+static_assert(sizeof(desc_hid_report_idle) == 21);
+
 // 45-byte boot-keyboard report descriptor (modifier byte + reserved + 6 keycodes,
 // no Report ID -- boot protocol forbids one and avoids collision with the gamepad's Report ID 1).
 uint8_t const desc_hid_report_kbd[] = {
@@ -973,6 +1029,11 @@ static_assert(sizeof(desc_hid_report_consumer) == 23, "consumer report descripto
 // Application return pointer to descriptor
 // Descriptor contents must exist long enough for transfer to complete
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {
+#ifdef ENABLE_WAKE_HID
+    if (usb_idle_descriptor_requested()) {
+        return itf == 1 ? desc_hid_report_kbd : desc_hid_report_idle;
+    }
+#endif
     // Instance 0 is the gamepad; 1 and 2 are the boot keyboard and consumer control
     // added by ENABLE_WAKE_HID. Map explicitly -- a fall-through would hand a
     // mis-numbered instance the DualSense descriptor.
@@ -1009,9 +1070,14 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void) langid;
     size_t chr_count;
 
-    if (ds_mode()) {
+    if (usb_idle_descriptor_requested()) {
+        string_desc_arr[1] = "DS5Dongle";
+        string_desc_arr[2] = "DS5Dongle (controller off)";
+    } else if (ds_mode()) {
+        string_desc_arr[1] = "Sony Interactive Entertainment";
         string_desc_arr[2] = "DualSense Wireless Controller";
     }else {
+        string_desc_arr[1] = "Sony Interactive Entertainment";
         string_desc_arr[2] = "DualSense Edge Wireless Controller";
     }
 
@@ -1093,7 +1159,7 @@ uint8_t const desc_bos[] = {
 uint8_t const *tud_descriptor_bos_cb(void) {
     // BOS carries the MS OS 2.0 selective-suspend opt-in, only meaningful for wake.
     // When wake is off the device is USB 2.0 and the host won't ask -- guard anyway.
-    if (!get_config().enable_wake) return nullptr;
+    if (usb_idle_descriptor_requested() || !get_config().enable_wake) return nullptr;
     return desc_bos;
 }
 

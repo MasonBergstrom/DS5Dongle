@@ -9,9 +9,125 @@
 #include "bsp/board_api.h"
 #include "config.h"
 #include "utils.h"
+#include "usb.h"
+#include "wake.h"
+#include "pico/time.h"
 
 uint8_t mute[2] = {}; // 0: SPEAKER(0x02) 1: MIC(0x05)
 float volume[2] = {0.0f,48.0f}; // 0: SPEAKER(0x02) 1: MIC(0x05)
+
+namespace {
+enum class UsbIdentityTarget : uint8_t { Detached, Idle, Full };
+enum class UsbIdentityPhase : uint8_t { Detached, WaitingAttach, Connecting, Served };
+
+constexpr uint64_t USB_REENUMERATE_DELAY_US = 250'000; // exceeds USB's 100 ms debounce
+
+UsbIdentityTarget identity_target = UsbIdentityTarget::Detached;
+UsbIdentityPhase identity_phase = UsbIdentityPhase::Detached;
+bool descriptor_idle = false;
+bool served_idle = false;
+uint64_t detached_at_us = 0;
+
+void request_identity(UsbIdentityTarget target) {
+#if ENABLE_SERIAL
+    (void) target; // Keep the CDC diagnostic identity attached in serial builds.
+#else
+    identity_target = target;
+#endif
+}
+}
+
+void usb_identity_init() {
+#if ENABLE_SERIAL
+    identity_target = UsbIdentityTarget::Full;
+    identity_phase = UsbIdentityPhase::Served;
+    descriptor_idle = false;
+    served_idle = false;
+#else
+    if (!get_config().enable_wake) {
+        identity_target = UsbIdentityTarget::Detached;
+    } else if (get_config().enable_idle_usb) {
+        identity_target = UsbIdentityTarget::Idle;
+    } else {
+        identity_target = UsbIdentityTarget::Full;
+    }
+    identity_phase = identity_target == UsbIdentityTarget::Detached
+                         ? UsbIdentityPhase::Detached
+                         : UsbIdentityPhase::WaitingAttach;
+    descriptor_idle = identity_target == UsbIdentityTarget::Idle;
+    served_idle = false;
+    detached_at_us = time_us_64();
+#endif
+}
+
+void usb_identity_request_full() { request_identity(UsbIdentityTarget::Full); }
+void usb_identity_request_idle() { request_identity(UsbIdentityTarget::Idle); }
+void usb_identity_request_detached() { request_identity(UsbIdentityTarget::Detached); }
+
+bool usb_idle_descriptor_requested() { return descriptor_idle; }
+
+bool usb_idle_identity_active() {
+    return identity_phase == UsbIdentityPhase::Served && served_idle;
+}
+
+bool usb_gamepad_available() {
+    return identity_phase == UsbIdentityPhase::Served && !served_idle;
+}
+
+void usb_identity_note_descriptor_served(bool idle) {
+    served_idle = idle;
+    identity_phase = UsbIdentityPhase::Served;
+}
+
+void usb_identity_task() {
+#if ENABLE_SERIAL
+    return;
+#else
+    // Re-enumerating while suspended can wake the host before the wake HID
+    // sequence is ready. Likewise, do not remove the keyboard while F15 is
+    // still held or awaiting its key-up report.
+    if (tud_suspended() || wake_owns_keyboard()) return;
+
+    const uint64_t now = time_us_64();
+    if (identity_target == UsbIdentityTarget::Detached) {
+        if (identity_phase != UsbIdentityPhase::Detached) {
+            wake_note_usb_reconnect();
+            tud_disconnect();
+            identity_phase = UsbIdentityPhase::Detached;
+            detached_at_us = now;
+        }
+        return;
+    }
+
+    const bool want_idle = identity_target == UsbIdentityTarget::Idle;
+    if (identity_phase == UsbIdentityPhase::Served && served_idle == want_idle) return;
+
+    if (identity_phase == UsbIdentityPhase::Served ||
+        (identity_phase == UsbIdentityPhase::Connecting && descriptor_idle != want_idle)) {
+        wake_note_usb_reconnect();
+        tud_disconnect();
+        identity_phase = UsbIdentityPhase::WaitingAttach;
+        descriptor_idle = want_idle;
+        detached_at_us = now;
+        return;
+    }
+
+    if (identity_phase == UsbIdentityPhase::Detached) {
+        identity_phase = UsbIdentityPhase::WaitingAttach;
+        descriptor_idle = want_idle;
+        detached_at_us = now;
+        return;
+    }
+
+    if (identity_phase == UsbIdentityPhase::WaitingAttach) {
+        descriptor_idle = want_idle;
+        if (now - detached_at_us >= USB_REENUMERATE_DELAY_US) {
+            identity_phase = UsbIdentityPhase::Connecting;
+            tud_connect();
+        }
+    }
+#endif
+}
 
 #define UAC1_ENTITY_SPK_FEATURE_UNIT    0x02
 #define UAC1_ENTITY_MIC_FEATURE_UNIT    0x05

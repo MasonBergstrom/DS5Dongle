@@ -228,6 +228,10 @@ void wake_on_bt_disconnect(void) {
     button_shortcut_reset();
 }
 
+bool wake_owns_keyboard(void) {
+    return state == WAKE_REQUESTED || state == WAKE_KEY_DOWN || state == WAKE_KEY_UP_SENT;
+}
+
 void wake_task(void) {
     const uint64_t now = time_us_64();
 

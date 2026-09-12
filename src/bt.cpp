@@ -22,6 +22,7 @@
 #include "dse.h"
 #include "fake_ds5.h"
 #include "wake.h"
+#include "usb.h"
 #include "pico/util/queue.h"
 #if ENABLE_BATT_LED
 #include "battery_led.h"
@@ -597,15 +598,6 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
         }
 
         case HCI_EVENT_DISCONNECTION_COMPLETE: {
-#if !ENABLE_SERIAL
-            // Hide the USB device when no controller is paired (upstream behavior), EXCEPT when
-            // wake is on (stay on the bus so a returning controller can signal a host wake) or
-            // while the host is suspended -- hiding then re-showing re-enumerates, and a USB
-            // re-connect wakes a sleeping host. Defer the hide until the host is awake.
-            if (!get_config().enable_wake && !tud_suspended()) {
-                tud_disconnect();
-            }
-#endif
             gap_connectable_control(1);
             gap_discoverable_control(1);
             const uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
@@ -615,6 +607,14 @@ static void __not_in_flash_func(hci_packet_handler)(uint8_t packet_type, uint16_
             bt_rssi = 0;
             hid_control_cid = 0;
             hid_interrupt_cid = 0;
+            wake_on_bt_disconnect();
+            if (get_config().enable_wake && get_config().enable_idle_usb) {
+                usb_identity_request_idle();
+            } else if (get_config().enable_wake) {
+                usb_identity_request_full();
+            } else {
+                usb_identity_request_detached();
+            }
             gpio_on_disconnect();
             while (queue_try_remove(&send_fifo, NULL)) {
             }
@@ -690,7 +690,7 @@ static void __not_in_flash_func(l2cap_packet_handler)(uint8_t packet_type, uint1
                         is_dse = false;
                     }
 #if !ENABLE_SERIAL
-                    if (!tud_suspended()) tud_connect();
+                    usb_identity_request_full();
 #endif
                 }
             }
