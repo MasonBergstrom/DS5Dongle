@@ -16,6 +16,8 @@
 #endif
 #include "wake.h"
 #include "button_shortcut.h"
+#include "usb.h"
+#include "pico/time.h"
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/watchdog.h"
@@ -60,6 +62,18 @@ void __not_in_flash_func(interrupt_loop)() {
     // USB slot with the latest frame, repeating it when Bluetooth has not
     // delivered a newer one. This preserves an even cadence for gyro users.
     const bool smoothed = get_config().polling_rate_mode == 3;
+
+    // Fresh frames are queued immediately. Only defer a duplicate that would
+    // otherwise occupy the single-buffered endpoint and block fresher data
+    // arriving later in the same USB interval.
+    if (smoothed && !report_dirty) {
+        const uint64_t last_poll = usb_hid_last_complete_us();
+        const uint32_t defer_us = usb_hid_defer_us();
+        if (last_poll != 0 && defer_us > 0 && time_us_64() < last_poll + defer_us) {
+            return;
+        }
+    }
+
     bool should_send = false;
     USBGetStateData report{};
 

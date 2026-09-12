@@ -213,6 +213,17 @@ bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p
 }
 
 static volatile uint32_t hid_poll_period_us = 0;
+static volatile uint64_t hid_last_complete_us = 0;
+
+// Additive-increase/multiplicative-decrease-style controller for duplicate
+// padding. Completion callbacks are dispatched from tud_task(), so individual
+// interval measurements are noisy; evaluate completion rate over a window.
+static constexpr uint32_t HID_DEFER_UP_US = 25;
+static constexpr uint32_t HID_DEFER_DOWN_US = 100;
+static constexpr uint32_t HID_RATE_WINDOW = 256;
+static volatile uint32_t hid_defer_us = 0;
+static uint32_t hid_rate_count = 0;
+static uint64_t hid_rate_start_us = 0;
 
 void usb_note_enumerated_binterval(uint8_t binterval) {
     hid_poll_period_us = binterval ? static_cast<uint32_t>(binterval) * 1000u : 0u;
@@ -222,12 +233,45 @@ uint32_t usb_hid_poll_period_us() {
     return hid_poll_period_us;
 }
 
+uint64_t usb_hid_last_complete_us() {
+    return hid_last_complete_us;
+}
+
+uint32_t usb_hid_defer_us() {
+    return hid_defer_us;
+}
+
 void tud_hid_report_complete_cb(uint8_t instance, uint8_t const *report, uint16_t len) {
     (void) report;
     (void) len;
     if (instance != 0) return;
+
+    const uint64_t now = time_us_64();
+    const uint32_t period = hid_poll_period_us;
+    if (period != 0) {
+        if (hid_rate_start_us == 0) {
+            hid_rate_start_us = now;
+        } else if (++hid_rate_count >= HID_RATE_WINDOW) {
+            const uint64_t elapsed = now - hid_rate_start_us;
+            const uint64_t expected = static_cast<uint64_t>(hid_rate_count) * period;
+            const uint32_t defer_cap = period - period / 8u;
+
+            if (elapsed > expected + expected / 8u) {
+                hid_defer_us = hid_defer_us > HID_DEFER_DOWN_US
+                                   ? hid_defer_us - HID_DEFER_DOWN_US
+                                   : 0;
+            } else if (hid_defer_us < defer_cap) {
+                hid_defer_us += HID_DEFER_UP_US;
+            }
+
+            hid_rate_count = 0;
+            hid_rate_start_us = now;
+        }
+    }
+
+    hid_last_complete_us = now;
 #if ENABLE_DEBUG
-    debug_usb_report_delivered(time_us_64());
+    debug_usb_report_delivered(now);
 #endif
 }
 

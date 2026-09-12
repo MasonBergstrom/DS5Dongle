@@ -15,4 +15,9 @@ extern float volume[2]; // 0: SPEAKER(0x02) 1: MIC(0x05)
 void usb_note_enumerated_binterval(uint8_t binterval);
 uint32_t usb_hid_poll_period_us();
 
+// Poll-completion phase and adaptive padding delay used by the experimental
+// duplicate-only deferral in 1000 Hz smoothed mode.
+uint64_t usb_hid_last_complete_us();
+uint32_t usb_hid_defer_us();
+
 #endif //DS5_BRIDGE_USB_H

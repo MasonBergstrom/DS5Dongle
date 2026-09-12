@@ -189,7 +189,7 @@ void debug_usb_report_delivered(uint64_t now_us) {
         return;
     }
 
-    printf("[DLV] reports=%lu fstale mean=%luus min=%luus max=%luus | stale mean=%luus | poll mean=%luus min=%luus max=%luus late=%lu period=%luus\n",
+    printf("[DLV] reports=%lu fstale mean=%luus min=%luus max=%luus | stale mean=%luus | poll mean=%luus min=%luus max=%luus late=%lu defer=%luus period=%luus\n",
            static_cast<unsigned long>(reports),
            static_cast<unsigned long>(fresh_reports ? fresh_stale_sum_us / fresh_reports : 0),
            static_cast<unsigned long>(fresh_stale_min_us == UINT32_MAX ? 0 : fresh_stale_min_us),
@@ -199,6 +199,7 @@ void debug_usb_report_delivered(uint64_t now_us) {
            static_cast<unsigned long>(poll_min_us == UINT32_MAX ? 0 : poll_min_us),
            static_cast<unsigned long>(poll_max_us),
            static_cast<unsigned long>(late),
+           static_cast<unsigned long>(usb_hid_defer_us()),
            static_cast<unsigned long>(usb_hid_poll_period_us()));
 
     reports = 0;
