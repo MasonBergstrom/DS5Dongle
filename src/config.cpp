@@ -140,6 +140,10 @@ void config_valid() {
         body->status_gpio_mode = 0;
         printf("[Config] status_gpio_mode is invalid\n");
     }
+    if (body->enable_idle_usb > 1) {
+        body->enable_idle_usb = 0;
+        printf("[Config] enable_idle_usb is invalid\n");
+    }
 }
 
 void config_load() {

@@ -27,6 +27,7 @@
 #include "config.h"
 #include "cmd.h"
 #include "dse.h"
+#include "usb.h"
 #include "status_gpio.h"
 #if ENABLE_BATT_LED
 #include "battery_led.h"
@@ -54,6 +55,7 @@ critical_section_t report_cs;
 volatile bool report_dirty = false;
 
 void __not_in_flash_func(interrupt_loop)() {
+    if (!usb_gamepad_available()) return;
     if (!tud_hid_ready()) return;
 
     // TODO: Refactor for better code reuse
@@ -161,6 +163,7 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer,
                                uint16_t reqlen) {
 #ifdef ENABLE_WAKE_HID
+    if (usb_idle_identity_active() && itf == 0) return 0;
     if (itf == 1) {
         if (reqlen >= 8) {
             memset(buffer, 0, 8);
@@ -217,6 +220,7 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer,
                            uint16_t bufsize) {
 #ifdef ENABLE_WAKE_HID
+    if (usb_idle_identity_active() && itf == 0) return;
     if (itf == 1) {
         // Drop keyboard SET_REPORT (host LED state).
         return;
@@ -350,6 +354,7 @@ int main() {
     wake_init();
 
     config_load();
+    usb_identity_init();
     gpio_on_disconnect();
 
     bt_init();
@@ -368,6 +373,7 @@ int main() {
         cyw43_arch_poll();
         tud_task();
         wake_task();
+        usb_identity_task();
         audio_loop();
 #if ENABLE_DEBUG
         debug_log_core1_stack_usage();
