@@ -174,6 +174,7 @@ CONSUMER_NAMES = {
     "nexttrack": 0x00B5, "next": 0x00B5,
     "prevtrack": 0x00B6, "previoustrack": 0x00B6, "prev": 0x00B6,
     "stop": 0x00B7,
+    # Stored marker; firmware emits Generic Desktop System Sleep.
     "sleep": 0x0032,
     "brightnessup": 0x006F, "brightnessdown": 0x0070,
 }
