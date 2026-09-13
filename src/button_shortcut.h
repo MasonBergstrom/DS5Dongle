@@ -32,7 +32,9 @@ struct __attribute__((packed)) ButtonShortcut {
             uint8_t reserved;
         } keyboard; // ShortcutActionKeyboard
         struct __attribute__((packed)) {
-            uint16_t usage; // USB HID consumer page usage ID (little-endian)
+            // USB HID consumer usage, except 0x0032 is translated to Generic
+            // Desktop System Sleep for host compatibility.
+            uint16_t usage; // little-endian
             uint8_t reserved;
         } consumer; // ShortcutActionConsumer
         uint8_t payload[3]; // Whole action payload, for zeroing
