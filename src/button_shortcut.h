@@ -47,9 +47,11 @@ bool shortcut_slot_valid(const ButtonShortcut &shortcut);
 #ifdef ENABLE_WAKE_HID
 void button_shortcut_tick(const USBGetStateData& state);
 void button_shortcut_reset();
+void button_shortcut_report_complete(uint8_t instance);
 #else
 // No keyboard/consumer HID interface to fire into: keep the call sites clean
 // instead of sprinkling #ifdef through main.cpp and wake.cpp.
 static inline void button_shortcut_tick(const USBGetStateData&) {}
 static inline void button_shortcut_reset() {}
+static inline void button_shortcut_report_complete(uint8_t) {}
 #endif

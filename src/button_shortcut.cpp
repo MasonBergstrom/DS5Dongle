@@ -306,6 +306,17 @@ void button_shortcut_reset() {
     }
 }
 
+void button_shortcut_report_complete(uint8_t instance) {
+    // A System Sleep press can suspend USB before the normal 30 ms release
+    // timer runs. Queue its release as soon as the press transfer completes so
+    // the host never carries a logically held sleep key into suspend/wake.
+    if (release_pending && release_instance == SHORTCUT_SYSTEM_INSTANCE &&
+        instance == SHORTCUT_SYSTEM_INSTANCE && send_release(instance)) {
+        release_pending = false;
+        release_time = nil_time;
+    }
+}
+
 void button_shortcut_tick(const USBGetStateData &state) {
     // Let the held key go before process_shortcuts() looks for the next action.
     if (release_pending && time_reached(release_time) &&
