@@ -4,6 +4,7 @@
 #include "button_utils.h"
 #include "config.h"
 #include "tusb.h"
+#include "usb_descriptors.h"
 #include "pico/time.h"
 #include "utils.h"
 
@@ -106,6 +107,11 @@ static bool send_release(uint8_t instance) {
         uint16_t usage = 0;
         return tud_hid_n_report(CONSUMER_INSTANCE, 0, &usage, sizeof(usage));
     }
+    if (instance == SHORTCUT_SYSTEM_INSTANCE) {
+        uint8_t system_control = 0;
+        return tud_hid_n_report(SHORTCUT_SYSTEM_INSTANCE, 0,
+                                &system_control, sizeof(system_control));
+    }
     return tud_hid_n_keyboard_report(KEYBOARD_INSTANCE, 0, 0, nullptr);
 }
 
@@ -124,7 +130,21 @@ static bool send_keyboard(const ButtonShortcut &shortcut) {
 }
 
 static bool send_consumer(const ButtonShortcut &shortcut) {
-    if (release_pending || !tud_hid_n_ready(CONSUMER_INSTANCE)) return false;
+    if (release_pending) return false;
+
+    if (shortcut.consumer.usage == SHORTCUT_SLEEP_USAGE) {
+        if (!tud_hid_n_ready(SHORTCUT_SYSTEM_INSTANCE)) return false;
+        uint8_t system_control = SHORTCUT_SYSTEM_SLEEP;
+        if (!tud_hid_n_report(SHORTCUT_SYSTEM_INSTANCE, 0,
+                              &system_control, sizeof(system_control))) return false;
+
+        release_pending = true;
+        release_instance = SHORTCUT_SYSTEM_INSTANCE;
+        release_time = make_timeout_time_ms(KEY_PRESS_MS);
+        return true;
+    }
+
+    if (!tud_hid_n_ready(CONSUMER_INSTANCE)) return false;
 
     // Copy out of the packed struct before taking an address.
     uint16_t usage = shortcut.consumer.usage;

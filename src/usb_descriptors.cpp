@@ -52,6 +52,7 @@ enum {
 #ifdef ENABLE_WAKE_HID
     ITF_NUM_HID_KBD,
     ITF_NUM_HID_CONSUMER,
+    ITF_NUM_HID_SYSTEM,
 #endif
     ITF_NUM_TOTAL,
 
@@ -62,11 +63,11 @@ enum {
         0,
 #endif
     CONFIG_DESC_LEN_BASE = 0x00E3 + CONFIG_DESC_LEN_AUDIO_IAD,
-    // Keyboard and Consumer Control interfaces add 25 bytes each:
+    // Keyboard, Consumer Control, and System Control add 25 bytes each:
     //   9 (interface) + 9 (HID class) + 7 (EP IN) = 25
     CONFIG_DESC_LEN_SHORTCUT_HID =
 #ifdef ENABLE_WAKE_HID
-        50,
+    75,
 #else
         0,
 #endif
@@ -484,6 +485,13 @@ uint8_t descriptor_configuration[] = {
     0x03, // bmAttributes: Interrupt
     0x08, 0x00, // wMaxPacketSize: 8 (2-byte usage, padded)
     0x0A, // bInterval: 10ms
+
+    // --- INTERFACE DESCRIPTOR (HID System Control) ---
+    0x09, 0x04, ITF_NUM_HID_SYSTEM, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+    // HID Descriptor (system control)
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x1D, 0x00,
+    // Endpoint Descriptor (HID IN: EP9)
+    0x07, 0x05, 0x89, 0x03, 0x01, 0x00, 0x0A,
 #endif
 };
 
@@ -1032,24 +1040,30 @@ uint8_t const desc_hid_report_kbd[] = {
     0xC0              // End Collection
 };
 
-// 23-byte Consumer Control report descriptor: one 16-bit usage array, no Report ID.
-// Volume/mute/transport keys must come from this page -- Windows does not act on the
-// Keyboard-page equivalents (0x7F..0x81), which is why they get their own interface.
+// Consumer Control remains a standalone 16-bit usage array so existing media
+// shortcut reports retain their original format.
 uint8_t const desc_hid_report_consumer[] = {
     0x05, 0x0C,       // Usage Page (Consumer)
     0x09, 0x01,       // Usage (Consumer Control)
     0xA1, 0x01,       // Collection (Application)
     0x15, 0x00,       //   Logical Minimum (0)
-    // Logical Maximum item data is signed; 767 needs the 2-byte form regardless.
-    0x26, SHORTCUT_CONSUMER_USAGE_MAX & 0xFF, SHORTCUT_CONSUMER_USAGE_MAX >> 8, //   Logical Maximum
+    0x26, SHORTCUT_CONSUMER_USAGE_MAX & 0xFF, SHORTCUT_CONSUMER_USAGE_MAX >> 8,
     0x19, 0x00,       //   Usage Minimum (0)
-    0x2A, SHORTCUT_CONSUMER_USAGE_MAX & 0xFF, SHORTCUT_CONSUMER_USAGE_MAX >> 8, //   Usage Maximum
+    0x2A, SHORTCUT_CONSUMER_USAGE_MAX & 0xFF, SHORTCUT_CONSUMER_USAGE_MAX >> 8,
     0x75, 0x10,       //   Report Size (16)
     0x95, 0x01,       //   Report Count (1)
-    0x81, 0x00,       //   Input (Data,Array,Abs) -- one usage at a time
+    0x81, 0x00,       //   Input (Data,Array,Abs)
     0xC0              // End Collection
 };
-static_assert(sizeof(desc_hid_report_consumer) == 23, "consumer report descriptor length must match wDescriptorLength in config descriptor");
+static_assert(sizeof(desc_hid_report_consumer) == 23,
+              "consumer report descriptor length must match the config descriptor");
+
+// Windows sleep keys use Generic Desktop System Control rather than Consumer Sleep.
+uint8_t const desc_hid_report_system[] = {
+    TUD_HID_REPORT_DESC_SYSTEM_CONTROL()
+};
+static_assert(sizeof(desc_hid_report_system) == 29,
+              "system report descriptor length must match the config descriptor");
 #endif
 
 // Invoked when received GET HID REPORT DESCRIPTOR
@@ -1068,6 +1082,7 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t itf) {
 #ifdef ENABLE_WAKE_HID
         case 1: return desc_hid_report_kbd;
         case 2: return desc_hid_report_consumer;
+        case SHORTCUT_SYSTEM_INSTANCE: return desc_hid_report_system;
 #endif
         default: return ds_mode() ? desc_hid_report_ds : desc_hid_report_dse;
     }

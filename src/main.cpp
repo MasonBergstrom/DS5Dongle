@@ -31,6 +31,7 @@
 #if ENABLE_BATT_LED
 #include "battery_led.h"
 #endif
+#include "usb_descriptors.h"
 
 uint8_t reportSeqCounter = 0;
 uint8_t packetCounter = 0;
@@ -151,6 +152,10 @@ uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t
         }
         return 0;
     }
+    if (itf == SHORTCUT_SYSTEM_INSTANCE && reqlen >= 1) {
+        buffer[0] = 0;
+        return 1;
+    }
 #endif
     (void) itf;
     (void) report_id;
@@ -207,6 +212,7 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
         // Drop keyboard SET_REPORT (host LED state).
         return;
     }
+    if (itf == SHORTCUT_SYSTEM_INSTANCE) return; // System Control is input-only.
 #endif
     (void) itf;
     (void) report_id;

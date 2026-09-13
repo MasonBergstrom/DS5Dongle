@@ -11,5 +11,8 @@ constexpr uint16_t BUTTON_REPORT_SIZE = 63;
 // never ask for a usage the report descriptor does not declare.
 constexpr uint8_t SHORTCUT_KEY_USAGE_MAX = 0x73; // Keyboard F24
 constexpr uint16_t SHORTCUT_CONSUMER_USAGE_MAX = 0x02FF;
+constexpr uint16_t SHORTCUT_SLEEP_USAGE = 0x0032; // Stored Sleep action marker
+constexpr uint8_t SHORTCUT_SYSTEM_INSTANCE = 3;
+constexpr uint8_t SHORTCUT_SYSTEM_SLEEP = 2; // System Control array value
 
 #endif //DS5_BRIDGE_USB_DESCRIPTORS_H
