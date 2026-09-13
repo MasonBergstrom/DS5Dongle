@@ -268,6 +268,10 @@ void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t rep
 }
 
 int main() {
+    // A zeroed DualSense report means deflected sticks, D-pad North, and active
+    // touch contacts. Start with the same neutral report sent on BT disconnect.
+    memcpy(&interrupt_in_data, state_init_data + 3, sizeof(interrupt_in_data));
+
 #if SYS_CLOCK_KHZ != 150000
     vreg_set_voltage(VREG_VOLTAGE_1_20);
     sleep_ms(1000);
