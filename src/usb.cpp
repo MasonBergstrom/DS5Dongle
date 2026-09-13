@@ -26,6 +26,7 @@ UsbIdentityTarget identity_target = UsbIdentityTarget::Detached;
 UsbIdentityPhase identity_phase = UsbIdentityPhase::Detached;
 bool descriptor_idle = false;
 bool served_idle = false;
+bool reconnect_requested = false;
 uint64_t detached_at_us = 0;
 
 void request_identity(UsbIdentityTarget target) {
@@ -64,6 +65,25 @@ void usb_identity_request_full() { request_identity(UsbIdentityTarget::Full); }
 void usb_identity_request_idle() { request_identity(UsbIdentityTarget::Idle); }
 void usb_identity_request_detached() { request_identity(UsbIdentityTarget::Detached); }
 
+void usb_identity_reconnect() {
+#if ENABLE_SERIAL
+    wake_note_usb_reconnect();
+    tud_disconnect();
+    sleep_ms(150);
+    tud_connect();
+#else
+    if (!get_config().enable_wake) {
+        identity_target = UsbIdentityTarget::Detached;
+    } else if (!bt_is_connected() && get_config().enable_idle_usb) {
+        identity_target = UsbIdentityTarget::Idle;
+    } else {
+        identity_target = UsbIdentityTarget::Full;
+    }
+    // Defer the detach until after the SET_REPORT control transfer completes.
+    reconnect_requested = true;
+#endif
+}
+
 bool usb_idle_descriptor_requested() { return descriptor_idle; }
 
 bool usb_idle_identity_active() {
@@ -89,6 +109,23 @@ void usb_identity_task() {
     if (tud_suspended() || wake_owns_keyboard()) return;
 
     const uint64_t now = time_us_64();
+    if (reconnect_requested) {
+        reconnect_requested = false;
+        wake_note_usb_reconnect();
+        if (identity_phase != UsbIdentityPhase::Detached) tud_disconnect();
+
+        if (identity_target == UsbIdentityTarget::Detached) {
+            identity_phase = UsbIdentityPhase::Detached;
+            return;
+        }
+
+        descriptor_idle = identity_target == UsbIdentityTarget::Idle;
+        served_idle = false;
+        identity_phase = UsbIdentityPhase::WaitingAttach;
+        detached_at_us = now;
+        return;
+    }
+
     if (identity_target == UsbIdentityTarget::Detached) {
         if (identity_phase != UsbIdentityPhase::Detached) {
             wake_note_usb_reconnect();

@@ -17,6 +17,7 @@ void usb_identity_init();
 void usb_identity_request_full();
 void usb_identity_request_idle();
 void usb_identity_request_detached();
+void usb_identity_reconnect();
 void usb_identity_task();
 
 // Descriptor/callback routing state. The requested descriptor is changed only
