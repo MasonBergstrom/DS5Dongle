@@ -488,7 +488,7 @@ uint8_t descriptor_configuration[] = {
 };
 
 #ifdef ENABLE_WAKE_HID
-// Wake-only identity. The inert vendor HID deliberately occupies TinyUSB HID
+// Wake-only identity. The configuration vendor HID deliberately occupies TinyUSB HID
 // instance 0 so the keyboard remains instance 1, exactly as it is in the full
 // DualSense configuration. This avoids dynamic instance routing during
 // detach/reattach transitions while exposing no gamepad usage collection.
@@ -497,10 +497,10 @@ uint8_t const descriptor_configuration_idle[] = {
     // Configuration: two HID interfaces, self-powered + remote wake.
     0x09, 0x02, U16_TO_U8S_LE(IDLE_CONFIG_LEN), 0x02, 0x01, 0x00, 0xE0, 0x32,
 
-    // Interface 0: inert vendor-defined HID placeholder, IN EP4.
+    // Interface 0: vendor-defined configuration HID, IN EP4.
     0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
-    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x15, 0x00,
-    0x07, 0x05, 0x84, 0x03, 0x01, 0x00, 0x0A,
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x47, 0x00,
+    0x07, 0x05, 0x84, 0x03, 0x02, 0x00, 0x0A,
 
     // Interface 1: wake boot keyboard, IN EP7.
     0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00,
@@ -961,8 +961,9 @@ uint8_t const desc_hid_report_dse[] = {
 static_assert(sizeof(desc_hid_report_dse) == 453);
 
 #ifdef ENABLE_WAKE_HID
-// Inert placeholder for idle HID instance 0. Its vendor-defined usage creates
-// no game-controller node; the one-byte input report is never transmitted.
+// Configuration channel for idle HID instance 0. Its vendor-defined usage
+// creates no game-controller node. Feature reports mirror the bridge commands
+// on the full identity; the one-byte input report is never transmitted.
 uint8_t const desc_hid_report_idle[] = {
     0x06, 0x00, 0xFF, // Usage Page (Vendor Defined 0xFF00)
     0x09, 0x01,       // Usage (1)
@@ -971,11 +972,37 @@ uint8_t const desc_hid_report_idle[] = {
     0x26, 0xFF, 0x00, // Logical Maximum (255)
     0x75, 0x08,       // Report Size (8)
     0x95, 0x01,       // Report Count (1)
+    0x85, 0x01,       // Report ID (1), required because feature reports use IDs
     0x09, 0x02,       // Usage (2) for the input field
     0x81, 0x02,       // Input (Data,Var,Abs)
+    0x85, 0xF6,       // Report ID (set config)
+    0x09, 0x37,       // Usage (Vendor 0x37)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
+    0x85, 0xF7,       // Report ID (get config)
+    0x09, 0x38,       // Usage (Vendor 0x38)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
+    0x85, 0xF8,       // Report ID (firmware version)
+    0x09, 0x39,       // Usage (Vendor 0x39)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
+    0x85, 0xF9,       // Report ID (signal strength)
+    0x09, 0x3A,       // Usage (Vendor 0x3A)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
+    0x85, 0xFA,       // Report ID (button remaps)
+    0x09, 0x3B,       // Usage (Vendor 0x3B)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
+    0x85, 0xFB,       // Report ID (keyboard shortcut slots)
+    0x09, 0x3C,       // Usage (Vendor 0x3C)
+    0x95, 0x3F,       // Report Count (63)
+    0xB1, 0x02,       // Feature (Data,Var,Abs)
     0xC0              // End Collection
 };
-static_assert(sizeof(desc_hid_report_idle) == 21);
+static_assert(sizeof(desc_hid_report_idle) == 71,
+              "idle report descriptor length must match the config descriptor");
 
 // 45-byte boot-keyboard report descriptor (modifier byte + reserved + 6 keycodes,
 // no Report ID -- boot protocol forbids one and avoids collision with the gamepad's Report ID 1).

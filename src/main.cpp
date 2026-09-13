@@ -141,7 +141,9 @@ void __not_in_flash_func(on_bt_data)(CHANNEL_TYPE channel, uint8_t *data, uint16
 uint16_t tud_hid_get_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t *buffer,
                                uint16_t reqlen) {
 #ifdef ENABLE_WAKE_HID
-    if (usb_idle_identity_active() && itf == 0) return 0;
+    // Idle instance 0 is a vendor-defined configuration HID. It exposes only
+    // bridge commands; never forward DualSense feature requests over Bluetooth.
+    if (usb_idle_identity_active() && itf == 0 && !is_pico_cmd(report_id)) return 0;
     if (itf == 1) {
         if (reqlen >= 8) {
             memset(buffer, 0, 8);
@@ -198,7 +200,9 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
 void tud_hid_set_report_cb(uint8_t itf, uint8_t report_id, hid_report_type_t report_type, uint8_t const *buffer,
                            uint16_t bufsize) {
 #ifdef ENABLE_WAKE_HID
-    if (usb_idle_identity_active() && itf == 0) return;
+    // Idle instance 0 accepts bridge commands only. In particular, do not
+    // interpret arbitrary reports as DualSense output while no controller exists.
+    if (usb_idle_identity_active() && itf == 0 && !is_pico_cmd(report_id)) return;
     if (itf == 1) {
         // Drop keyboard SET_REPORT (host LED state).
         return;
