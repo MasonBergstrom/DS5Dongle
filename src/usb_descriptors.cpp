@@ -550,8 +550,8 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
         descriptor_configuration[offset - 16] = 0xC5;
     }
 
-    // Advertise REMOTE_WAKEUP only when wake is on. Include the keyboard and consumer
-    // interfaces (the LAST two descriptor blocks) when wake or the explicit keyboard
+    // Advertise REMOTE_WAKEUP only when wake is on. Include the keyboard, consumer,
+    // and system interfaces (the last three blocks) when wake or the explicit keyboard
     // switch is on. With both off this is byte-identical to the base descriptor.
     const bool wake = get_config().enable_wake;
     const bool kbd = wake || get_config().enable_keyboard;
@@ -560,7 +560,7 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
                                : (uint16_t) (CONFIG_DESC_LEN_TOTAL - CONFIG_DESC_LEN_SHORTCUT_HID);
     descriptor_configuration[2] = (uint8_t) (total & 0xFF);                  // wTotalLength lo
     descriptor_configuration[3] = (uint8_t) (total >> 8);                    // wTotalLength hi
-    descriptor_configuration[4] = kbd ? ITF_NUM_TOTAL : (ITF_NUM_TOTAL - 2); // bNumInterfaces
+    descriptor_configuration[4] = kbd ? ITF_NUM_TOTAL : (ITF_NUM_TOTAL - 3); // bNumInterfaces
     return descriptor_configuration;
 }
 
